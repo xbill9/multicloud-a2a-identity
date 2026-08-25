@@ -904,15 +904,26 @@ them, and nothing fails when it rots.
   purely on scheduling noise, which is the clearest possible demonstration that
   these are not latencies. The predecessor series' 18.8–25.1s hosted-runtime
   numbers came from warm repeats. Do not quote these.
-- **The master's ingress is open to the internet, and this file said it was
-  not.** Measured 2026-08-21: `roles/run.invoker` on `research-master` is bound
-  to `allUsers`, and an unauthenticated GET of `/`, `/api/health`, `/api/last`
-  and `/api/audit` returns 200. `RESEARCH_PUBLIC=1` is set in the deployed
-  revision. The GCP researcher is unaffected and still 403s. This is the exact
-  combination the "front end is private" note below warns about — a surface
-  holding credentials for three clouds, made public to try it once — and the
-  `verify` control that would have caught it asserts the page 403s, which is
-  further evidence for the item above about controls not having been re-run.
+- ~~**The master's ingress is open to the internet, and this file said it was
+  not.**~~ **Closed 2026-08-25.** Measured 2026-08-21: `roles/run.invoker` on
+  `research-master` was bound to `allUsers`, and an unauthenticated GET of `/`,
+  `/api/health`, `/api/last` and `/api/audit` returned 200, with
+  `RESEARCH_PUBLIC=1` in the serving revision. Still true on 2026-08-25, four
+  days later. The binding is revoked and `RESEARCH_PUBLIC=0`; all four now 403
+  anonymously, `research-gcp` is unchanged at 403, and `verify` records the
+  front end at 403 rather than announcing a deliberate 200.
+
+  Two things worth keeping from closing it. **The exposure was worse than this
+  entry said:** anonymous `/api/health` disclosed the AWS account number, the
+  full AgentCore runtime ARN, the Azure Container App FQDN, the researcher URL
+  and every leg's auth mode — reconnaissance, on top of the billable fan-out.
+  **And revocation is not instant:** anonymous requests kept returning 200 for
+  about two minutes after the binding was removed. A control run straight after
+  a revocation reports the hole still open and sends someone hunting a second
+  cause that does not exist. An "authenticated" probe in that same window
+  returned 200 for the same reason — a false pass in the other direction, and
+  the fourth of its kind this harness has produced. See `docs/INTEROP.md` for
+  the 401-vs-403 distinction that made it readable.
 - **The audit block above has never been regenerated from the real store.**
 - **The judge sits on one participant's cloud.** See above.
 - **`docs/DEPLOYMENT_PLAN.md` and `docs/ARTICLE_PLAN.md` describe the currency

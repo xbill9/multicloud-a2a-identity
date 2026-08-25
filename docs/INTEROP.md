@@ -11,6 +11,107 @@ reading specifications. Run `python -m matrix.runner` to reproduce.
 > the deployed system they were taken from has not been rebuilt. See the status
 > table at the top of the README.
 
+## Finding: Cloud Run's 401 and 403 are different facts, and revocation is not instant (2026-08-25)
+
+Found while closing the master's public ingress, which had been open for at
+least four days (see the README's "Not done" list).
+
+**401 is not a denial.** Cloud Run returns:
+
+| code | meaning |
+|---|---|
+| 401 | no usable ID token — wrong audience, an OAuth *access* token, malformed |
+| 403 | token fine; this identity lacks `roles/run.invoker` |
+
+`gcloud auth print-identity-token` for a *user* account mints a token whose
+audience is the gcloud OAuth client, not the service URL, so Cloud Run rejects
+it 401. Reading that as "denied, as required" conflates a client-side bug with
+an authorization result — the same mistake as reading AWS's
+`InvalidIdentityToken` and `AccessDenied` as one outcome, which cost the
+predecessor series a day. `print-access-token` fails the same way: Cloud Run's
+invoker check wants an ID token, not an access token.
+
+**IAM revocation propagates in about two minutes.** Anonymous requests kept
+returning 200 for roughly that long after `allUsers` was removed from the
+service policy, with the policy already reading correctly. Both directions of
+that window are traps: a control run immediately after a revocation reports the
+hole still open and sends someone looking for a second cause, and any probe
+that succeeds in the window succeeds because the service is still open to
+everyone — which is how an "authenticated caller works" check passed here while
+carrying a token Cloud Run would have rejected.
+
+The rule that falls out: **after changing Cloud Run IAM, a control proves
+nothing until it has been re-run past the propagation window,** and a probe
+that passes needs a negative twin to show it was the credential that made the
+difference.
+
+## Finding: a delegation chain cannot ride inside the credential, and the blocker is the minter (2026-08-25)
+
+Prompted by [an argument that enterprise agents need cryptographic workload
+identity plus RFC 8693 nested `act` claims][devto-identity], which draws a
+token carrying `user → planner → reconciler` end to end. This mesh is the right
+instrument to test that, because it federates three ways from one identity.
+
+The answer is that the chain cannot travel inside the credential on **any** leg
+here, and the interesting part is why: it is not that the three consumers
+refuse it. Two of them would take it.
+
+AWS has two fields built for exactly this job:
+
+| field | what it does |
+|---|---|
+| `SourceIdentity` | immutable once set, persists across role chaining, present on every action taken with the role |
+| session tags | up to 50, readable in `aws:PrincipalTag/*` conditions |
+
+`SourceIdentity` is, functionally, the article's "who initiated this" — AWS
+shipped it years before anyone framed this as an agent problem. But both fields
+are populated **from claims inside the web identity token**, never from a
+request parameter. The caller cannot set them; the IdP must.
+
+And the IdP cannot. The GCE metadata identity endpoint accepts exactly three
+query parameters — `audience`, `format`, `licenses` — and mints a fixed claim
+set: `iss iat exp aud sub azp email email_verified`, plus a
+`google.compute_engine` object under `format=full`. There is no parameter that
+adds a claim, and no claim in the set that carries an actor.
+
+Every leg in this mesh starts at that mint. So:
+
+- **GCP → GCP** — Google mints the ID token, claims fixed. No.
+- **GCP → Azure** — Entra mints the access token; its claims come from the app
+  registration, not from the assertion the caller presented. No.
+- **GCP → AWS** — the credential downstream is a SigV4 session with no JWT at
+  all, and the two fields that *would* have carried it are fed by claims the
+  mint cannot emit. No.
+
+**The constraint is the minter, not the consumer.** That generalises past this
+repo: any mesh whose caller gets its identity from a cloud metadata server
+inherits that cloud's claim set, and none of the three let you add to it.
+Delegation therefore has to travel *beside* the credential — in the A2A message
+— and be verified per agent, which is a materially different design from the
+one the article draws.
+
+One exception, not yet exercised: AgentCore `CUSTOM_JWT` accepts a JWT from an
+issuer you control, so that leg *could* carry an `act` chain if it stopped
+using SigV4. One of three.
+
+### The 64 characters nobody is using
+
+`RoleSessionName` is required, caller-chosen, `[\w+=,.@-]{2,64}`, and it lands
+in the assumed-role ARN and in CloudTrail. It is the **only** caller-supplied
+identity string in this mesh that reaches a provider's audit log.
+
+This repo sets it to the constant `research-mesh-master`. That is defensible —
+the comment on it explains that a stale value mislabels every call in someone
+else's audit log — but it means the one available delegation field carries no
+per-run information. Putting a run correlator there would make a CloudTrail
+entry traceable back to a specific run, at the cost of one STS call per run
+instead of one per process, because the session name is fixed when the
+credential is minted and the credential is cached. That trade has not been
+made; it is written down here so the next person does not have to rediscover
+that the field exists.
+
+[devto-identity]: https://dev.to/jitu028/your-ai-agent-has-no-identity-the-missing-security-layer-in-enterprise-agentic-ai-58b
+
 ## Finding: AgentCore least privilege needs `GetAgentCard`, not `Resource: "*"` (2026-08-12)
 
 The predecessor series left this open: scoping

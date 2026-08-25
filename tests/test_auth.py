@@ -9,6 +9,7 @@ without an account, a network, or a vendor SDK.
 import base64
 import json
 import logging
+from urllib.parse import unquote
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -26,8 +27,10 @@ from coordinator.auth import (
     _jwt_expiry,
     _parse_sts_response,
     _signing_key,
+    auth_attenuated,
     auth_mode,
     credentials_for,
+    is_keyless,
 )
 from coordinator.errors import AdapterError, FailureKind
 
@@ -182,7 +185,12 @@ def sts_error(code: str, message: str = "denied") -> str:
     )
 
 
-def sigv4_auth(sts_body: str = STS_OK, status: int = 200, record: list | None = None):
+def sigv4_auth(
+    sts_body: str = STS_OK,
+    status: int = 200,
+    record: list | None = None,
+    session_policy: str | None = None,
+):
     def handler(request: httpx.Request) -> httpx.Response:
         if record is not None:
             record.append(request)
@@ -192,6 +200,7 @@ def sigv4_auth(sts_body: str = STS_OK, status: int = 200, record: list | None = 
         role_arn="arn:aws:iam::123456789012:role/research-aws-federated",
         region="us-west-2",
         audience="sts.amazonaws.com",
+        session_policy=session_policy,
         identity=identity_returning(jwt()),
         transport=transport(handler),
     )
@@ -207,6 +216,100 @@ async def test_sts_exchange_presents_the_google_token_as_the_web_identity():
     body = seen[0].content.decode()
     assert "Action=AssumeRoleWithWebIdentity" in body
     assert "WebIdentityToken=" in body
+
+
+GET_CARD_ONLY = json.dumps(
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": ["bedrock-agentcore:GetAgentCard"],
+                "Resource": "*",
+            }
+        ],
+    }
+)
+
+
+async def test_no_session_policy_is_sent_when_none_is_configured():
+    """The default must stay unattenuated.
+
+    STS rejects an empty `Policy` outright, so a bug that sent one whenever the
+    variable was merely *defined* would break every AWS leg at once rather than
+    quietly widening anything -- but it would break it at the credential mint,
+    which is the failure this repo is worst at reading. Assert the absence.
+    """
+    seen: list[httpx.Request] = []
+    auth = sigv4_auth(record=seen)
+
+    async for _ in auth.async_auth_flow(httpx.Request("POST", "https://agentcore.example/a2a")):
+        pass
+
+    assert "Policy=" not in seen[0].content.decode()
+    assert auth.attenuated is False
+
+
+async def test_session_policy_is_presented_to_sts_when_configured():
+    seen: list[httpx.Request] = []
+    auth = sigv4_auth(record=seen, session_policy=GET_CARD_ONLY)
+
+    async for _ in auth.async_auth_flow(httpx.Request("POST", "https://agentcore.example/a2a")):
+        pass
+
+    body = seen[0].content.decode()
+    assert "Policy=" in body
+    assert "GetAgentCard" in unquote(body)
+    assert auth.attenuated is True
+
+
+async def test_attenuation_does_not_change_the_mode_or_the_keyless_claim():
+    """`mode` is a key that KEYLESS_MODES matches on, not a description.
+
+    Appending something like "+scoped" to it would drop the leg out of the
+    frozenset and report a keyless federation as though it had used a stored
+    secret -- the exact misreport `is_keyless` exists to prevent.
+    """
+    auth = sigv4_auth(session_policy=GET_CARD_ONLY)
+
+    assert auth_mode(auth) == "aws-sigv4"
+    assert is_keyless(auth_mode(auth)) is True
+    assert auth_attenuated(auth) is True
+
+
+def test_attenuation_is_reported_false_rather_than_unknown_for_the_other_legs():
+    """Entra and Google cannot attenuate, and False is the honest answer.
+
+    Neither exchange accepts a caller-supplied policy: Entra returns the app
+    registration's scopes and a Google ID token carries none. Reporting
+    "not applicable" would read, in a summary, as though the permission had
+    been narrowed by some other means. It was not.
+    """
+    assert auth_attenuated(GoogleIdTokenAuth("https://x.run.app")) is False
+    assert auth_attenuated(None) is False
+
+
+def test_session_policy_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("AWS_A2A_AUTH", "aws-sigv4")
+    monkeypatch.setenv("AWS_A2A_ROLE_ARN", "arn:aws:iam::123456789012:role/r")
+    monkeypatch.setenv("AWS_A2A_REGION", "us-west-2")
+    monkeypatch.setenv("AWS_A2A_SESSION_POLICY", GET_CARD_ONLY)
+
+    auth = credentials_for("aws", "https://bedrock-agentcore.us-west-2.amazonaws.com/")
+
+    assert auth_attenuated(auth) is True
+
+
+def test_an_empty_session_policy_variable_means_unattenuated(monkeypatch):
+    """`AWS_A2A_SESSION_POLICY=` must mean off, not "send an empty policy"."""
+    monkeypatch.setenv("AWS_A2A_AUTH", "aws-sigv4")
+    monkeypatch.setenv("AWS_A2A_ROLE_ARN", "arn:aws:iam::123456789012:role/r")
+    monkeypatch.setenv("AWS_A2A_REGION", "us-west-2")
+    monkeypatch.setenv("AWS_A2A_SESSION_POLICY", "")
+
+    auth = credentials_for("aws", "https://bedrock-agentcore.us-west-2.amazonaws.com/")
+
+    assert auth_attenuated(auth) is False
 
 
 async def test_signed_request_carries_a_sigv4_authorization_header():

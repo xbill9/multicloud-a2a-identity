@@ -349,6 +349,17 @@ class AwsSigV4Auth(httpx.Auth):
         # registration name on the Azure leg, so the same caller is the same
         # word on both clouds.
         session_name: str = "research-mesh-master",
+        # An inline session policy, as a JSON string. STS intersects it with
+        # the role's own policy and can only ever *narrow* the result -- there
+        # is no way to write one that grants something the role lacks. That
+        # asymmetry is the whole reason it is worth having: the role is
+        # provisioned once by `deploy_aws.sh` and outlives any single run,
+        # while this is chosen per process and costs nothing to make smaller.
+        #
+        # Measured 2026-08-25: with the role's two actions attenuated to
+        # GetAgentCard alone, discovery still returns 200 and the A2A
+        # invocation is denied. See `docs/INTEROP.md`.
+        session_policy: str | None = None,
         extra_headers: dict[str, str] | None = None,
         identity: WorkloadIdentity | None = None,
         timeout_s: float = 15.0,
@@ -359,6 +370,7 @@ class AwsSigV4Auth(httpx.Auth):
         self._audience = audience
         self._service = service
         self._session_name = session_name
+        self._session_policy = session_policy
         self._extra_headers = extra_headers or {}
         self._identity = identity or WorkloadIdentity()
         self._timeout_s = timeout_s
@@ -367,7 +379,22 @@ class AwsSigV4Auth(httpx.Auth):
 
     @property
     def mode(self) -> str:
+        # Deliberately unchanged by attenuation. `mode` is a key, not a
+        # description: `is_keyless` and the deploy scripts match on it, and
+        # appending "+scoped" here would silently drop the leg out of
+        # KEYLESS_MODES and report a keyless run as keyed. Attenuation is a
+        # separate axis, reported separately.
         return "aws-sigv4"
+
+    @property
+    def attenuated(self) -> bool:
+        """Whether this leg narrows the role with an inline session policy.
+
+        Reported rather than inferred, for the same reason `is_keyless` is: a
+        run that took the role's full permissions must not be summarised as
+        though it had been scoped down.
+        """
+        return bool(self._session_policy)
 
     def sync_auth_flow(self, request: httpx.Request) -> Iterator[httpx.Request]:
         raise RuntimeError("the mesh is async; use an httpx.AsyncClient")
@@ -404,6 +431,17 @@ class AwsSigV4Auth(httpx.Auth):
             "RoleSessionName": self._session_name,
             "WebIdentityToken": assertion,
         }
+        if self._session_policy:
+            # Logged by name, never by content: a session policy is not secret,
+            # but it is long, and a boundary log that scrolls is a boundary log
+            # nobody reads. The `mode` property carries the fact that one is in
+            # force, which is what the matrix and the CLI header report.
+            form["Policy"] = self._session_policy
+            log.info(
+                "%s -> attenuating the session with an inline policy (%d bytes)",
+                boundary,
+                len(self._session_policy),
+            )
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout_s, transport=self._transport
@@ -726,6 +764,12 @@ def credentials_for(
             # Caller-chosen, and matched by the trust policy's :oaud condition.
             audience=os.getenv(f"{prefix}_A2A_AUDIENCE", "sts.amazonaws.com"),
             service=service,
+            # Optional and off by default. The role is already scoped to two
+            # actions on one runtime ARN, so this is the *second* narrowing --
+            # per-process rather than per-deployment. Setting it to a policy
+            # allowing only GetAgentCard is the negative control that proves
+            # discovery and invocation are separately authorized.
+            session_policy=os.getenv(f"{prefix}_A2A_SESSION_POLICY") or None,
             extra_headers=_agentcore_headers(prefix) if service == "bedrock-agentcore" else None,
             identity=identity,
         )
@@ -767,6 +811,18 @@ def _agentcore_headers(prefix: str) -> dict[str, str]:
 def auth_mode(auth: httpx.Auth | None) -> str:
     """Name the mode on a credential, for the matrix report and the CLI header."""
     return getattr(auth, "mode", "none") if auth is not None else "none"
+
+
+def auth_attenuated(auth: httpx.Auth | None) -> bool:
+    """Whether this leg narrowed its credential below what its role allows.
+
+    Only the AWS leg can do this today, because STS is the only one of the
+    three exchanges that accepts a caller-supplied policy. Entra returns the
+    app registration's scopes and Google's ID token carries none at all, so
+    for those two the honest answer is False rather than "not applicable" --
+    the permission did not shrink, whatever the reason.
+    """
+    return bool(getattr(auth, "attenuated", False)) if auth is not None else False
 
 
 def is_keyless(mode: str) -> bool:

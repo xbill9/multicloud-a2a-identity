@@ -11,6 +11,56 @@ reading specifications. Run `python -m matrix.runner` to reproduce.
 > the deployed system they were taken from has not been rebuilt. See the status
 > table at the top of the README.
 
+## Finding: scope attenuation works across the federation boundary, and AWS names it in the denial (2026-08-25)
+
+"Permissions must shrink at each delegation" is easy to assert and rarely
+measured. It is measurable here, because STS is the only one of the three
+exchanges that accepts a caller-supplied policy.
+
+`AssumeRoleWithWebIdentity` takes an optional inline `Policy` (≤2048 characters
+plaintext). The resulting session's permissions are the **intersection** of the
+role's identity policy and the session policy; there is no way to write one
+that grants what the role lacks. So the role stays as `deploy_aws.sh` provisions
+it — two actions on one runtime ARN — and the session narrows further, per
+process, for free.
+
+Measured on the deployed mesh, `AWS_A2A_SESSION_POLICY` set to allow only
+`bedrock-agentcore:GetAgentCard`:
+
+```text
+run 20260825T173155-d8eac7 leg aws failed: authentication:
+A2A endpoint returned 403 ... {"message":"User:
+arn:aws:sts::…:assumed-role/research-aws-federated/research-mesh-master is not
+authorized to perform: bedrock-agentcore:InvokeAgentRuntime on resource:
+arn:aws:bedrock-agentcore:us-west-2:…:runtime/research_aws-Renyp76J4J
+because no session policy allows the bedrock-agentcore:InvokeAgentRuntime action"}
+```
+
+Container exit 3 — `NO_DRAFTS_EXIT`, this CLI's only code for *denied*. The
+positive control on the same build and the same leg exits 0.
+
+Two things in that message are worth more than the pass/fail:
+
+- **AWS names the session policy as the cause** — "because no session policy
+  allows" — so an attenuation denial is distinguishable in the error text from
+  a role-policy denial, which reads "no identity-based policy allows". That is
+  the rarest thing in this space: a provider error that says which of two
+  layers refused.
+- **The denial names `InvokeAgentRuntime`, not `GetAgentCard`.** The leg
+  reached the invocation, so discovery had already been authorised under the
+  same attenuated session — which is the 2026-08-12 finding above holding under
+  a second, narrower grant. Discovery and invocation are separately authorised,
+  and they are separately *attenuable*.
+
+Off by default: `AWS_A2A_SESSION_POLICY` unset or empty means unattenuated. STS
+rejects an empty `Policy` outright, so a bug that sent one whenever the variable
+was merely defined would break the leg at the credential mint.
+
+This is the one of the article's three rules that this mesh can demonstrate
+rather than assert — and it is worth noting that it is demonstrable *because*
+AWS built session policies for it, not because anything agent-specific was
+added.
+
 ## Finding: Cloud Run's 401 and 403 are different facts, and revocation is not instant (2026-08-25)
 
 Found while closing the master's public ingress, which had been open for at

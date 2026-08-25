@@ -1,0 +1,495 @@
+<title>Cross-Cloud A2A Agent Identity</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #F1F3F0;
+    --surface:    #FFFFFF;
+    --ink:        #191E1B;
+    --ink-soft:   #3E4642;
+    --muted:      #6C736E;
+    --rule:       #D6DAD5;
+    --accent:     #2C6B5B;
+    --accent-dim: #E2EBE6;
+    --refuse:     #A34329;
+    --refuse-dim: #F3E3DC;
+
+    --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --body:    "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --measure: 66ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #121614;
+      --surface:    #1A201D;
+      --ink:        #E7EBE7;
+      --ink-soft:   #BCC4BF;
+      --muted:      #8B948E;
+      --rule:       #2C3531;
+      --accent:     #6FBFA5;
+      --accent-dim: #1E2E28;
+      --refuse:     #D9866A;
+      --refuse-dim: #2E211B;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #121614;
+    --surface:    #1A201D;
+    --ink:        #E7EBE7;
+    --ink-soft:   #BCC4BF;
+    --muted:      #8B948E;
+    --rule:       #2C3531;
+    --accent:     #6FBFA5;
+    --accent-dim: #1E2E28;
+    --refuse:     #D9866A;
+    --refuse-dim: #2E211B;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 19px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: var(--measure);
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+  }
+
+  header.masthead {
+    padding: 72px 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(2.1rem, 6vw, 3.1rem);
+    line-height: 1.06;
+    letter-spacing: -0.022em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    font-size: 1.16rem;
+    color: var(--ink-soft);
+    margin: 0;
+    text-wrap: pretty;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin-top: 8px;
+  }
+  .fact { background: var(--surface); padding: 16px 18px; }
+  .fact dt {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 6px;
+  }
+  .fact dd {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.34rem;
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.62rem;
+    line-height: 1.2;
+    letter-spacing: -0.014em;
+    text-wrap: balance;
+    margin: 34px 0 0;
+    padding-top: 26px;
+    border-top: 2px solid var(--ink);
+  }
+
+  h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.08rem;
+    letter-spacing: 0.005em;
+    text-wrap: balance;
+    margin: 18px 0 0;
+  }
+
+  p { margin: 0; text-wrap: pretty; }
+
+  a { color: var(--accent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  strong { font-weight: 600; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.82em;
+    background: var(--accent-dim);
+    color: var(--ink);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .scroll { overflow-x: auto; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--display);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+  }
+  caption {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding-bottom: 10px;
+  }
+  th, td {
+    text-align: left;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  thead th {
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1.5px solid var(--ink);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, th.mono { font-family: var(--mono); font-size: 0.79rem; }
+
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .chip.pass    { background: var(--accent-dim); color: var(--accent); }
+  .chip.refused { background: var(--refuse-dim); color: var(--refuse); }
+  .chip.none    { background: transparent; color: var(--muted); }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .callout p { font-size: 1rem; }
+
+  ul { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 10px; }
+  li { padding-left: 2px; }
+
+  .legs {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .leg {
+    background: var(--surface);
+    padding: 16px 18px;
+    display: grid;
+    grid-template-columns: minmax(96px, 132px) 1fr;
+    gap: 4px 18px;
+    align-items: baseline;
+  }
+  .leg .route {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+  }
+  .leg .how { font-family: var(--display); font-size: 0.9rem; font-weight: 500; }
+  .leg .note { grid-column: 2; font-size: 0.88rem; color: var(--muted); }
+
+  footer.colophon {
+    margin-top: 40px;
+    padding-top: 22px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  @media (max-width: 560px) {
+    body { font-size: 17.5px; padding: 0 18px 72px; }
+    header.masthead { padding-top: 48px; }
+    .leg { grid-template-columns: 1fr; }
+    .leg .note { grid-column: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Cross-Cloud A2A · Part Four</div>
+    <h1>Cross-Cloud A2A Agent Identity</h1>
+    <p class="standfirst">The benchmark series measured how fast agents talk to each other across three clouds. This one measures how they prove who they are — and what happens to a proposed identity architecture when you deploy it instead of diagramming it.</p>
+    <dl class="facts">
+      <div class="fact"><dt>Clouds</dt><dd>3</dd></div>
+      <div class="fact"><dt>Stored secrets</dt><dd>0</dd></div>
+      <div class="fact"><dt>Controls passing</dt><dd>8 / 8</dd></div>
+      <div class="fact"><dt>Rules testable</dt><dd>2 of 3</dd></div>
+    </dl>
+  </header>
+
+  <h2>Same Mesh, a Different Question</h2>
+
+  <p>The earlier articles in this series put agents on GCP, AWS and Azure and timed the A2A calls between them. Speed was the variable. Identity was whatever it took to make the call connect.</p>
+
+  <p>That is the wrong way round for anything going into production, and there is now a good deal of writing that says so. The best-argued version I have read is <a href="https://dev.to/jitu028/your-ai-agent-has-no-identity-the-missing-security-layer-in-enterprise-agentic-ai-58b">Jitendra Gupta's piece on agent identity</a>, which makes a claim worth taking seriously: enterprise agents are running on generic service accounts, the way applications did fifteen years ago, and that single flat identity destroys the three facts you need afterwards — who asked, which agent acted, and under whose authority.</p>
+
+  <p>It is a design argument. It cites no deployment. I happen to have a three-cloud mesh already running, so this article puts the argument on it and reports what the clouds actually do.</p>
+
+  <h2>What is Agent Identity Supposed to Solve?</h2>
+
+  <p>The proposal reduces to three rules. Stated fairly, before I go anywhere near them:</p>
+
+  <ul>
+    <li><strong>Rule 1 — no stored secrets.</strong> An agent should not bootstrap from a hardcoded key. It should attest to the platform and be issued a short-lived credential.</li>
+    <li><strong>Rule 2 — never lose the delegation chain.</strong> The token should carry who initiated the work and which agents relayed it, nested, all the way down.</li>
+    <li><strong>Rule 3 — permissions must shrink.</strong> Every handoff narrows the grant, so the final permission is an intersection rather than a union.</li>
+  </ul>
+
+  <p>The recommended stack is SPIFFE and SPIRE for workload identity, OAuth 2.0 token exchange for delegated authorization, DPoP to bind tokens to a workload, and scope attenuation at each hop.</p>
+
+  <h2>The Test Bed</h2>
+
+  <p>Three research agents, one per cloud, plus a coordinator that fans a brief out to all three and scores the drafts. The coordinator runs on Cloud Run for one reason: it is the runtime I have confirmed will mint a workload OIDC token with an arbitrary audience, which is what makes every outbound leg a candidate for keyless federation.</p>
+
+  <p>Each leg starts at the same place — the metadata server — and then diverges:</p>
+
+  <div class="legs">
+    <div class="leg">
+      <span class="route">GCP → GCP</span>
+      <span class="how">Google ID token, audience pinned to the service URL</span>
+      <span class="note">An in-cloud hop, and labelled as one. It does not count toward the interop claim.</span>
+    </div>
+    <div class="leg">
+      <span class="route">GCP → AWS</span>
+      <span class="how">Token to STS AssumeRoleWithWebIdentity, then SigV4</span>
+      <span class="note">AWS federates with accounts.google.com natively. Trust is pinned to the service account's numeric ID, never its email.</span>
+    </div>
+    <div class="leg">
+      <span class="route">GCP → Azure</span>
+      <span class="how">Token to an Entra Federated Identity Credential</span>
+      <span class="note">Presented as a client assertion in place of a client secret.</span>
+    </div>
+  </div>
+
+  <p>Every leg has a positive control and a negative control: run it as deployed, then run it with the credential removed and confirm it is refused. There is also a wrong-audience probe on the GCP leg, which is the one that separates <em>this identity is checked</em> from <em>some token is checked</em>. All eight hold on the current build.</p>
+
+  <h2>Rule 1 — No Stored Secrets Anywhere</h2>
+
+  <p>This one the mesh already satisfies, and the interesting part is that it satisfies it without SPIFFE.</p>
+
+  <p>SPIRE exists to give you an attested identity document where the platform gives you none. Cloud Run gives you one. The metadata server issues a short-lived, audience-scoped JWT whose subject the runtime vouches for and the workload cannot forge, which is the same class of object as a JWT-SVID. The trust conditions on the AWS and Azure sides are written against that subject's immutable numeric ID.</p>
+
+  <p>The OAuth half is not an analogy either. It is literally OAuth: the Azure leg presents a JWT bearer client assertion, and the reverse direction — running the coordinator on AWS instead — uses the RFC 8693 token-exchange grant against Google's STS.</p>
+
+  <div class="callout">
+    <p><strong>So the "missing layer" is the seam between the two.</strong> One credential adapter, one interface, three implementations behind it. Adding SPIRE here would insert an issuer nobody attests, and every callee would still have to trust its keys <em>in addition</em> to the three federations that already work. At three peers that is a component for nothing. At thirty, when the same identity is re-pinned in thirty places and free to drift, the trade flips.</p>
+  </div>
+
+  <h2>Rule 3 — Permissions Must Shrink</h2>
+
+  <p>Taking the third rule before the second, because it is the one that measures cleanly.</p>
+
+  <p>STS is the only one of the three exchanges that accepts a caller-supplied policy. <code>AssumeRoleWithWebIdentity</code> takes an optional inline session policy of up to 2,048 characters, and the resulting session gets the <em>intersection</em> of the role's policy and that one. There is no way to write a session policy that grants something the role lacks, which is exactly what makes it worth having: the role is provisioned once and outlives every run, while the session policy is chosen per process and costs nothing to make smaller.</p>
+
+  <p>The mesh's AWS role is already scoped to two actions on one runtime ARN. So the test is whether a session can narrow it further, and whether the two actions come apart.</p>
+
+  <div class="scroll">
+    <table>
+      <caption>AWS leg, session policy varied — deployed mesh, 2026-08-25</caption>
+      <thead>
+        <tr>
+          <th class="mono">Session policy allows</th>
+          <th>Card fetch</th>
+          <th>Invocation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">GetAgentCard only</td>
+          <td><span class="chip pass">Allowed</span></td>
+          <td><span class="chip refused">Refused</span></td>
+        </tr>
+        <tr>
+          <td class="mono">InvokeAgentRuntime only</td>
+          <td><span class="chip refused">Refused</span></td>
+          <td><span class="chip none">not reached</span></td>
+        </tr>
+        <tr>
+          <td class="mono">unattenuated</td>
+          <td><span class="chip pass">Allowed</span></td>
+          <td><span class="chip pass">Allowed</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>The pair is the result. Neither action stands in for the other in either direction, under a session the role would otherwise have permitted. Attenuation works across a federation boundary, and discovery is authorized separately from invocation — a point this project first hit a fortnight earlier, now holding under a second and narrower grant.</p>
+
+  <p>Two details worth carrying away. AWS names the <em>session policy</em> as the layer that refused, which distinguishes an attenuation refusal from a role refusal without any guessing. And the invoke-only run is what proves the card fetch genuinely succeeded in the card-only run rather than being skipped: when discovery is the narrowed action, the leg never reaches the invocation at all.</p>
+
+  <p>This is the one rule of the three that a deployed mesh can demonstrate rather than assert. It is also worth being clear about why it is demonstrable: AWS built session policies for this years ago. Nothing agent-specific was added.</p>
+
+  <h2>Rule 2 — The Delegation Chain</h2>
+
+  <p>Here the proposal and the hardware part company, and the reason is more interesting than a straight no.</p>
+
+  <p>AWS has two fields built for precisely this job. <code>SourceIdentity</code> is immutable once set, persists across role chaining, and is present on every action taken with the role — functionally the "who initiated this" field, shipped long before anyone framed it as an agent problem. Session tags do the attribute half and can be read back in IAM conditions.</p>
+
+  <p>Both are populated <strong>from claims inside the web identity token</strong>, never from a request parameter. The caller cannot set them. The identity provider must.</p>
+
+  <p>And the identity provider cannot. The GCE metadata identity endpoint accepts three query parameters — <code>audience</code>, <code>format</code> and <code>licenses</code> — and mints a fixed claim set: issuer, issued-at, expiry, audience, subject, authorized party, email and verification flag, plus a Compute Engine block under <code>format=full</code>. There is no parameter that adds a claim, and no claim in the set that carries an actor.</p>
+
+  <div class="callout">
+    <p><strong>The constraint is the minter, not the consumer.</strong> Two of the three clouds would happily accept a delegation chain. None of the three legs can carry one, because they all start at a metadata server that offers no way to say anything beyond an audience.</p>
+    <p>That generalizes past this mesh. Any agent taking its identity from a cloud metadata server inherits that cloud's claim set and cannot add to it. Delegation therefore has to travel <em>beside</em> the credential — in the A2A message — and be verified by each agent in turn. That is a materially different design from the one the proposal draws.</p>
+  </div>
+
+  <p>One exception I have not exercised: Bedrock AgentCore accepts a JWT from an issuer you control, so that leg could carry a nested chain if it stopped using SigV4. One of three.</p>
+
+  <h2>The 64 Characters Nobody is Using</h2>
+
+  <p>There is exactly one caller-supplied identity string in this mesh that reaches a cloud provider's audit log, and it is easy to miss because it looks like a formality.</p>
+
+  <p><code>RoleSessionName</code> is required on every <code>AssumeRoleWithWebIdentity</code> call. Two to sixty-four characters, word characters plus <code>=,.@-</code>. It lands in the assumed-role ARN and in CloudTrail, and it is chosen entirely by the caller.</p>
+
+  <p>This mesh sets it to a constant. That is defensible — a stale session name silently mislabels every call you make in somebody else's audit log — but it means the one available field carries no per-run information. Putting a run correlator there would make a CloudTrail entry traceable to a specific run. The cost is one STS call per run instead of one per process, because the session name is fixed when the credential is minted and the credential is cached.</p>
+
+  <p>I have not made that trade. I am writing it down so the next person does not have to rediscover that the field is there.</p>
+
+  <h2>Where the Proposal is Ahead</h2>
+
+  <p>It names the human, and this mesh has none.</p>
+
+  <p>The whole argument turns on <em>on behalf of whom</em>. The mesh has no answer, because it has never been asked the question: every identity in it is a machine, the run record carries a run ID and no requester, and the chain is one hop deep. That is not a gap in the implementation. It is a gap in the problem I chose, and the proposal is right that it is the half that matters once a person is in the loop.</p>
+
+  <p>The third rule landed on this project too. A coordinator holding federated credentials for three clouds is the softest target in any mesh, and it is exactly the surface that gets opened to the internet to try something once. Reviewing it for this article is what turned that up, and closing it took a revoked binding and a redeployed flag. The controls found it. They found it four days after the fact, which is an argument for running them on a schedule rather than before a write-up.</p>
+
+  <h2>Scorecard</h2>
+
+  <div class="scroll">
+    <table>
+      <caption>Proposal against deployed mesh</caption>
+      <thead>
+        <tr><th>Property</th><th>Proposal</th><th>This mesh</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>No stored secrets</td>
+          <td>SPIFFE/SPIRE issues SVIDs</td>
+          <td>Metadata mint into three federations, reported per leg</td>
+        </tr>
+        <tr>
+          <td>Delegation chain</td>
+          <td>Nested actor claims via token exchange</td>
+          <td>Not carryable in the credential on any leg</td>
+        </tr>
+        <tr>
+          <td>Permissions shrink</td>
+          <td>Attenuate at every hop</td>
+          <td>Measured, both directions</td>
+        </tr>
+        <tr>
+          <td>Proof of possession</td>
+          <td>DPoP</td>
+          <td>SigV4 on the AWS leg; bearer on the other two</td>
+        </tr>
+        <tr>
+          <td>Human in the chain</td>
+          <td>Central to the design</td>
+          <td>Absent</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>The two are not really competing. One is a design for the human-to-agent boundary with nothing deployed behind it. The other is a measured implementation of the agent-to-agent boundary with no human in it. Each is strongest where the other is empty.</p>
+
+  <p>Where they genuinely conflict is the mechanism, and there the hardware settles it: the chain does not fit inside the credential.</p>
+
+  <h2>Summary</h2>
+
+  <p>Three research agents were deployed across GCP, AWS and Azure, coordinated from Cloud Run, with every outbound leg authenticated by a federated credential and no long-lived secret anywhere in the mesh.</p>
+
+  <p>Against those three legs, one of the proposal's rules was demonstrated by measurement — permissions narrow across a federation boundary, and discovery and invocation narrow independently. One was already satisfied, by the platform rather than by the recommended stack. And one turned out not to be buildable the way it is drawn, because the field that would carry it is filled by the identity provider and the identity provider offers no way to fill it.</p>
+
+  <p>The next piece of work is the cheap half of that third result, and it needs none of the machinery: record who asked. Until a run carries a requester, the audit trail names the coordinator as the actor for everything — which is the original complaint, correctly aimed.</p>
+
+  <footer class="colophon">
+    <div>Measured 25 August 2026 · deployed mesh, single runs</div>
+    <div>Source and findings: <a href="https://github.com/xbill9/multicloud-a2a-identity">github.com/xbill9/multicloud-a2a-identity</a></div>
+    <div>Prior work: <a href="https://github.com/xbill9/cross-cloud-a2a-rollup">cross-cloud-a2a-rollup</a></div>
+  </footer>
+
+</div>

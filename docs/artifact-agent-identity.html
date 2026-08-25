@@ -1,4 +1,4 @@
-<title>Does SPIRE Fit Cross-Cloud A2A?</title>
+<title>Auth is the Limiting Factor in Cross-Cloud A2A</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
@@ -91,8 +91,8 @@
   h1 {
     font-family: var(--display);
     font-weight: 700;
-    font-size: clamp(2.1rem, 6vw, 3.1rem);
-    line-height: 1.06;
+    font-size: clamp(2rem, 5.6vw, 2.95rem);
+    line-height: 1.07;
     letter-spacing: -0.022em;
     text-wrap: balance;
     margin: 0;
@@ -133,7 +133,7 @@
   h2 {
     font-family: var(--display);
     font-weight: 600;
-    font-size: 1.58rem;
+    font-size: 1.56rem;
     line-height: 1.2;
     letter-spacing: -0.014em;
     text-wrap: balance;
@@ -178,7 +178,6 @@
     overflow-x: auto;
   }
   pre code { background: none; padding: 0; font-size: inherit; }
-  pre.refused { border-left-color: var(--refuse); }
 
   .scroll { overflow-x: auto; }
 
@@ -267,6 +266,26 @@
   }
   .leg .how { font-family: var(--display); font-size: 0.9rem; font-weight: 500; }
 
+  .opt {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--accent);
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .opt.weak { border-top-color: var(--refuse); }
+  .opt h3 { margin: 0; }
+  .opt p { font-size: 0.97rem; }
+  .opt .verdict {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
   footer.colophon {
     margin-top: 38px;
     padding-top: 22px;
@@ -295,41 +314,41 @@
 
   <header class="masthead">
     <div class="eyebrow">Cross-Cloud A2A</div>
-    <h1>Does SPIRE Fit Cross-Cloud A2A?</h1>
-    <p class="standfirst">The benchmark series put Agents on GCP, AWS and Azure and timed the calls between them. This article asks a different question about the same framework: should the identity layer be SPIFFE and SPIRE, or is the platform already doing the job?</p>
+    <h1>Auth is the Limiting Factor in Cross-Cloud A2A</h1>
+    <p class="standfirst">The protocol works. Three rounds of benchmarks across GCP, AWS and Azure never turned up a protocol problem. What decides whether a multi-Cloud Agent mesh ships is the auth strategy behind it — so this article works out whether SPIFFE and SPIRE are that strategy, and what the alternatives are if they are not.</p>
     <dl class="facts">
       <div class="fact"><dt>Clouds in the mesh</dt><dd>3</dd></div>
-      <div class="fact"><dt>Places identity is pinned</dt><dd>3</dd></div>
-      <div class="fact"><dt>Services SPIRE adds</dt><dd>3</dd></div>
+      <div class="fact"><dt>Protocol changes needed</dt><dd>0</dd></div>
+      <div class="fact"><dt>Auth mechanisms needed</dt><dd>3</dd></div>
       <div class="fact"><dt>Serverless RFC open since</dt><dd>2020</dd></div>
     </dl>
   </header>
 
-  <h2>Why Ask This Now?</h2>
+  <h2>The Protocol is the Easy Part</h2>
 
-  <p>The earlier articles were about speed. Auth was whatever it took to get the call to connect.</p>
+  <p>A2A does what it says. Cards resolve, tasks come back, and the client libraries in three different languages talk to each other without special cases. Across the benchmark series the timings tracked the remote model and runtime — they never tracked anything in the wire format. There is no protocol work left to do to run Agents on three Clouds.</p>
 
-  <p>That order is fine for a benchmark and wrong for anything else. There is a lot of writing at the moment saying Agents need a real identity layer, and most of it lands on the same recommendation: use SPIFFE and SPIRE. <a href="https://dev.to/jitu028/your-ai-agent-has-no-identity-the-missing-security-layer-in-enterprise-agentic-ai-58b">Jitendra Gupta's article on Agent identity</a> is the clearest version I have read.</p>
+  <p>Auth is where it stops, and it stops hard. Every cross-Cloud call needs a credential the far side will accept, and the far side is a different vendor with a different notion of what an acceptable credential is. A2A is deliberately silent here: the spec has the client discover the scheme from the Agent Card and obtain the credential <strong>out of band</strong>. Out of band is doing a lot of work in that sentence. It is the entire integration.</p>
 
-  <p>The recommendation is usually made in the abstract. I already have the mesh deployed, so this article works out what adopting SPIRE would actually mean for it — what you would install, what you would delete, and what you would get that you do not have now.</p>
+  <p>So the interesting question for a multi-Cloud mesh is not which protocol to use. It is which auth strategy to build under it. The recommendation you will see most often is SPIFFE and SPIRE — <a href="https://dev.to/jitu028/your-ai-agent-has-no-identity-the-missing-security-layer-in-enterprise-agentic-ai-58b">Jitendra Gupta's article on Agent identity</a> is the clearest version of the case. It is usually made in the abstract. I have the mesh deployed, so this works out what adopting it would actually cost, and what else is on the table.</p>
 
   <h2>What are SPIFFE and SPIRE?</h2>
 
-  <p>SPIFFE is the specification. It gives every workload an ID that looks like a URI — <code>spiffe://example.org/coordinator</code> — and defines two credential formats that carry it: an X.509-SVID for mTLS, and a JWT-SVID for anything that wants a bearer token.</p>
+  <p>SPIFFE is the specification. Every workload gets an ID shaped like a URI — <code>spiffe://example.org/coordinator</code> — carried in one of two credential formats: an X.509-SVID for mTLS, or a JWT-SVID for anything that wants a bearer token.</p>
 
-  <p>SPIRE is the implementation. It has three moving parts:</p>
+  <p>SPIRE is the implementation, and it has three parts:</p>
 
   <ul>
-    <li><strong>SPIRE Server.</strong> One per trust domain. Signs SVIDs, holds the registration entries, needs a datastore and an HA story.</li>
-    <li><strong>SPIRE Agent.</strong> Runs on every node next to the workloads. It attests the node to the Server, then attests each local workload and hands it an SVID over a Unix socket.</li>
-    <li><strong>OIDC Discovery Provider.</strong> Publishes the JWKS so an outside Cloud can validate a JWT-SVID. This is the piece that makes cross-Cloud federation possible.</li>
+    <li><strong>SPIRE Server.</strong> One per trust domain. Signs SVIDs, holds registration entries, needs a datastore and an HA plan.</li>
+    <li><strong>SPIRE Agent.</strong> Runs on every node beside the workloads. It attests the node to the Server, then attests each local workload and hands it an SVID over a Unix socket.</li>
+    <li><strong>OIDC Discovery Provider.</strong> Publishes the JWKS so an outside Cloud can validate a JWT-SVID. This is what makes cross-Cloud federation possible at all.</li>
   </ul>
 
-  <p>The important structural point is the middle one. SPIRE's whole trust model starts with a node it can attest.</p>
+  <p>Keep the middle one in mind. SPIRE's trust model starts with a node it can attest.</p>
 
   <h2>What Does the Framework Already Do?</h2>
 
-  <p>The coordinator runs on Cloud Run and calls three Agents. Every outbound leg starts at the same place — the metadata server issues a short-lived OIDC token with whatever audience you ask for — and then diverges by Cloud:</p>
+  <p>The coordinator runs on Cloud Run and calls three Agents. Every leg starts at the same place — the metadata server issues a short-lived OIDC token with whatever audience you ask for — then diverges by Cloud:</p>
 
   <div class="legs">
     <div class="leg">
@@ -346,64 +365,64 @@
     </div>
   </div>
 
-  <p>There are no stored secrets on any of those legs. Each one has a positive control and a negative control — run it as deployed, then run it with the credential removed and check it gets refused. Eight probes, all holding on the current build.</p>
+  <p>No stored secrets on any of them. Each leg has a positive control and a negative control — run it as deployed, then run it with the credential removed and confirm it is refused. Eight probes, all holding on the current build.</p>
 
-  <p>So the framework already has the thing SPIFFE exists to provide. The metadata server issues a short-lived, audience-scoped token that the platform vouches for and the workload cannot forge. That is the same class of object as a JWT-SVID, and the trust conditions on AWS and Azure are written against its subject.</p>
+  <p>That is already the thing SPIFFE exists to provide. The metadata server issues a short-lived, audience-scoped token the platform vouches for and the workload cannot forge. Same class of object as a JWT-SVID, and the trust conditions on AWS and Azure are written against its subject.</p>
 
   <h2>So Why Would I Need SPIRE? Can't I Just Use the Metadata Server?</h2>
 
-  <p>For a three-leg mesh, mostly yes. There are two real arguments against, and they are worth separating because only one of them is about scale.</p>
+  <p>For three legs, mostly yes. Two real arguments against, and only one of them is about scale.</p>
 
-  <h3>Argument one: the identity is pinned in three places</h3>
+  <h3>The identity is pinned in three places</h3>
 
-  <p>The coordinator has one identity — a service account with a numeric ID. That number is written down three times, in three vendors' formats: as a condition in an AWS trust policy, as the subject on an Entra federated credential, and as an IAM binding on Cloud Run.</p>
+  <p>The coordinator has one identity — a service account with a numeric ID. That number is written down three times in three vendors' formats: a condition in an AWS trust policy, the subject on an Entra federated credential, an IAM binding on Cloud Run.</p>
 
-  <p>Nothing keeps those three in sync. The Azure deploy script has a verify step that reads the federated credential back and compares it to the service account, which exists because the two can drift apart. At three pinnings you can check them by hand. At thirty you cannot, and that is the case SPIRE is built for: one trust domain, one ID, and the Clouds trust the Server instead of each holding their own copy.</p>
+  <p>Nothing keeps them in sync. The Azure deploy script has a verify step that reads the federated credential back and compares it against the service account, and that step exists because the two can drift. At three pinnings you can check by hand. At thirty you cannot, and that is the case SPIRE is built for.</p>
 
-  <h3>Argument two: you do not control the claims</h3>
+  <h3>You do not control the claims</h3>
 
-  <p>This is the one that surprised me, and it is not about scale at all.</p>
+  <p>This one is not about scale, and it is the argument I take seriously.</p>
 
-  <p>AWS already has the field the Agent-identity articles are asking for. <code>SourceIdentity</code> is set once, cannot be changed, survives role chaining, and appears on every action taken with the role. Session tags do the same job for attributes. If you want to know which Agent relayed a call, AWS will record it.</p>
+  <p>AWS already has the field these Agent-identity articles keep asking for. <code>SourceIdentity</code> is set once, cannot be changed, survives role chaining, and shows up on every action taken with the role. Session tags do the same for attributes. If you want to record which Agent relayed a call, AWS will store it for you.</p>
 
   <p>Both are filled from claims inside the web identity token. Not from a request parameter — the caller cannot set them. The identity provider has to.</p>
 
-  <p>And on this framework the identity provider will not. The GCE metadata identity endpoint takes three query parameters:</p>
+  <p>On this framework the identity provider will not. The GCE metadata identity endpoint takes three query parameters and that is the whole surface:</p>
 
 <pre><code>GET /computeMetadata/v1/instance/service-accounts/default/identity
       ?audience=&lt;your audience&gt;
       &amp;format=full
       &amp;licenses=FALSE</code></pre>
 
-  <p>That is the whole surface. The claim set that comes back is fixed: issuer, issued-at, expiry, audience, subject, authorized party, email, verified flag, and a Compute Engine block when you ask for <code>format=full</code>. There is no parameter that adds a claim.</p>
+  <p>The claim set that comes back is fixed: issuer, issued-at, expiry, audience, subject, authorized party, email, verified flag, and a Compute Engine block if you ask for <code>format=full</code>. No parameter adds a claim.</p>
 
   <div class="callout">
-    <p><strong>Two of the three Clouds would accept a delegation chain. None of the three legs can send one</strong>, because they all start at a metadata server that has no way to say anything beyond an audience.</p>
-    <p>SPIRE changes that, and this is the strongest technical argument for it here. When you run the Server, the claim set is yours. The documented SPIRE-to-AWS pattern uses session tags on <code>AssumeRoleWithWebIdentity</code>, which is exactly the field the metadata server cannot reach.</p>
+    <p><strong>Two of the three Clouds would accept a delegation chain. None of the three legs can send one</strong>, because they all start at a metadata server with no way to say anything beyond an audience.</p>
+    <p>Run the Server yourself and the claim set is yours. That is the strongest technical argument for SPIRE here, and it is worth separating from the scale one, because it does not go away as the mesh gets smaller.</p>
   </div>
 
   <h2>Where Does the SPIRE Agent Actually Run?</h2>
 
-  <p>This is where the idea meets the framework, and it is a straight architectural mismatch rather than a matter of effort.</p>
+  <p>Here the idea meets the framework, and it is an architectural mismatch rather than a matter of effort.</p>
 
-  <p>The three runtimes in this mesh are Cloud Run, Bedrock AgentCore and Azure Container Apps. None of them gives you a node. You cannot run a daemon on the host, because there is no host you can address, and the containers come and go per request.</p>
+  <p>The three runtimes are Cloud Run, Bedrock AgentCore and Azure Container Apps. None of them gives you a node. There is no host to run a daemon on and no socket to share, and the containers come and go per request.</p>
 
-  <p>The SPIFFE project knows this. There is an RFC for serverless support — <a href="https://github.com/spiffe/spire/issues/1843">spiffe/spire#1843</a> — proposing an agentless path where the function attests directly to the Server. It was opened in September 2020. It is still a proposal.</p>
+  <p>The SPIFFE project knows. There is an RFC for serverless support — <a href="https://github.com/spiffe/spire/issues/1843">spiffe/spire#1843</a> — proposing an agentless path where the function attests straight to the Server. It was opened in September 2020 and it is still a proposal.</p>
 
-  <p>What that RFC proposes is worth reading closely, because of what it plans to attest <em>with</em>:</p>
+  <p>What it proposes to attest <em>with</em> is the part worth reading:</p>
 
   <ul>
     <li>For Google Cloud Functions, validate the identity token from the Compute Metadata Server.</li>
     <li>For AWS Lambda, sign a <code>GetCallerIdentity</code> query with SigV4 and let the Server replay it.</li>
   </ul>
 
-  <p>Those are the two primitives this framework already calls directly. The coordinator mints the metadata token itself, and the reverse direction — running the coordinator on AWS — already signs a <code>GetCallerIdentity</code> request and hands it to Google's STS as a subject token. On serverless, SPIRE's own plan is to wrap what the mesh is doing today.</p>
+  <p>Those are the two primitives this framework already calls directly. The coordinator mints the metadata token itself, and running the coordinator on AWS instead already signs a <code>GetCallerIdentity</code> request and hands it to Google's STS as a subject token. On serverless, SPIRE's own plan is to wrap what the mesh does today.</p>
 
   <h2>The Trust Policy is Not the Same Shape</h2>
 
-  <p>One more thing to know before you cost this out. Federating to AWS from SPIRE is not the same configuration as federating from Google, and the difference is the kind that produces a confusing failure rather than a clear one.</p>
+  <p>One more thing before costing it out. Federating to AWS from SPIRE is a different configuration from federating from Google, and it is the kind of difference that produces a confusing failure rather than a clear one.</p>
 
-  <p>Google is a native AWS identity provider. You do not create an IAM OIDC provider for it — if you do, federation stops working. The trust policy names the principal directly:</p>
+  <p>Google is a native AWS identity provider. You do not create an IAM OIDC provider for it — if you do, federation stops working:</p>
 
 <pre><code>"Principal": { "Federated": "accounts.google.com" },
 "Condition": { "StringEquals": {
@@ -411,7 +430,7 @@
     "accounts.google.com:sub":  "&lt;service account numeric ID&gt;"
 }}</code></pre>
 
-  <p>SPIRE is not native, so you must create the IAM OIDC provider, and the conditions are keyed on your own discovery domain:</p>
+  <p>SPIRE is not native, so the IAM OIDC provider is required, and conditions key on your own discovery domain:</p>
 
 <pre><code>"Principal": { "Federated":
     "arn:aws:iam::012345678901:oidc-provider/oidc-discovery.example.org" },
@@ -420,9 +439,7 @@
     "oidc-discovery.example.org:sub": "spiffe://example.org/ns/default/sa/default"
 }}</code></pre>
 
-  <p>Opposite rules for two tasks that look identical on a diagram. Worth writing on the runbook either way.</p>
-
-  <p>The discovery domain in that second policy is also a real deliverable. AWS and Entra fetch the JWKS over the public internet, so the OIDC Discovery Provider needs a DNS name, a certificate, and an endpoint you keep reachable. Losing it does not degrade the mesh gracefully — every leg stops federating.</p>
+  <p>Opposite rules for two tasks that look identical on a diagram. Note also that the discovery domain is a real deliverable — AWS and Entra fetch the JWKS over the public internet, so it needs DNS, a certificate and uptime. If it goes down, every leg stops federating at once.</p>
 
   <h2>Running the Numbers on the Trade</h2>
 
@@ -436,7 +453,7 @@
         <tr>
           <td>Token minter</td>
           <td>Managed metadata server</td>
-          <td>SPIRE Server you run and keep up</td>
+          <td>SPIRE Server you run</td>
         </tr>
         <tr>
           <td>Attestation on serverless</td>
@@ -467,47 +484,82 @@
     </table>
   </div>
 
-  <p>Read the fourth row twice, because it is the one people skip. SPIRE does not replace the federations. Every Agent in this mesh consumes external OIDC and will carry on doing so — AWS still needs a trust policy, Entra still needs a credential, Cloud Run still needs an invoker binding. You add a Server, an Agent, a public endpoint and a certificate, and you keep all three federations. What you remove is the duplication of one number across them.</p>
+  <p>Read the fourth row twice. SPIRE does not replace the federations. Every Agent here consumes external OIDC and carries on doing so — AWS still needs a trust policy, Entra still needs a credential, Cloud Run still needs an invoker binding. You add a Server, an Agent, a public endpoint and a certificate, and keep all three. What you remove is one number written down three times.</p>
 
   <h2>So Does it Make Sense?</h2>
 
-  <p>Not for this framework as it stands. Three reasons, in order of how much they matter:</p>
+  <p>Not for this framework as it stands. Three reasons, in order:</p>
 
   <ol>
-    <li>There is nowhere to put the Agent. All three runtimes are serverless, and the agentless path has been a proposal since 2020.</li>
-    <li>The gain is deduplication of three pinnings. Three is a number you can verify with a script, which the deploy already does.</li>
-    <li>You would be swapping a managed minter with no operational cost for one you run, and adding a public endpoint whose outage takes down all three legs at once.</li>
+    <li>There is nowhere to put the Agent. All three runtimes are serverless and the agentless path has been a proposal since 2020.</li>
+    <li>The gain is deduplicating three pinnings. Three is a number a script can verify, which the deploy already does.</li>
+    <li>You swap a managed minter with no operational cost for one you run, and add a public endpoint whose outage takes down all three legs together.</li>
   </ol>
 
-  <p>The claims argument is real and it is the one I would revisit first. But it buys you something the framework has no use for yet: there is no human in this mesh, no requester on a run, and one hop between coordinator and Agent. A delegation chain needs something to chain.</p>
+  <p>Put the Agents on EKS, GKE or AKS and the first reason evaporates — you have nodes, the Kubernetes node attestor works, and the argument becomes a normal build-versus-buy. That is the honest boundary of this verdict. It is about serverless, not about SPIFFE.</p>
 
-  <h2>When Would it Make Sense?</h2>
+  <h2>If Not SPIRE, Then What?</h2>
 
-  <p>Three conditions, any one of which flips the answer:</p>
+  <p>This is the part the identity articles tend to skip. Here are the six options I looked at, ordered by how well they fit a serverless multi-Cloud mesh. Worst fit last.</p>
 
-  <ul>
-    <li><strong>The Agents move to Kubernetes.</strong> On EKS, GKE or AKS you have nodes, the k8s node attestor works, and every objection above except the operational one disappears.</li>
-    <li><strong>The pinning count gets away from you.</strong> Somewhere past a dozen identities across three Clouds, hand-verification stops working and one trust domain starts paying for itself.</li>
-    <li><strong>You need claims the Cloud minters will not give you.</strong> If a person is initiating work and you have to record who, controlling the minter is the shortest route to it.</li>
-  </ul>
+  <div class="opt">
+    <h3>1. Native workload identity federation</h3>
+    <p>What the mesh runs now. The platform mints an attested token, each Cloud federates it in its own way. Nothing to install, nothing to operate, and the minter is somebody else's uptime problem.</p>
+    <p>You give up control of the claims, and the identity gets pinned once per Cloud. For a handful of Agents this is the right default, and it is worth choosing deliberately rather than ending up on it.</p>
+    <p class="verdict">Fits now · no delegation chain</p>
+  </div>
 
-  <p>None of those are true here today. All three are plausible within a year.</p>
+  <div class="opt">
+    <h3>2. Carry delegation in the A2A message</h3>
+    <p>If the constraint is that the credential cannot hold the chain, stop trying to put it there. A2A added an extension mechanism in v1.0.1, and one of the official extensions is <strong>Secure Passport</strong> — a <code>CallerContext</code> object attached as metadata alongside the task, carrying a client identifier, arbitrary state and a signature.</p>
+    <p>That is the right seam for this problem. The credential proves the calling service; the passport says who the work is for and who relayed it, and each Agent verifies it in turn. It works on every runtime because it never touches the credential path.</p>
+    <p>Two honest caveats. Secure Passport is aimed at context sharing rather than a formal delegation model, so you are defining the semantics yourself. And a signature needs a key and a trust story of its own — which is a smaller problem than SPIRE, but it is not nothing.</p>
+    <p class="verdict">Fits now · closest to the actual gap</p>
+  </div>
 
-  <h2>What I Would Do Instead</h2>
+  <div class="opt">
+    <h3>3. Use the Agent Card properly</h3>
+    <p>A2A already carries <code>securitySchemes</code> on the Agent Card, in the same shape as OpenAPI 3, plus a <code>security</code> block that can map scopes to individual skills. Most deployments — this one included — declare far less than the spec allows.</p>
+    <p>It will not mint you anything. What it gives you is the scheme stated in a machine-readable place, per skill, so a client finds out what an Agent requires by reading rather than by trying. Cheapest item on this list.</p>
+    <p class="verdict">Fits now · declarative only</p>
+  </div>
 
-  <p>The cheap half of the delegation problem needs none of this.</p>
+  <div class="opt">
+    <h3>4. Managed SPIFFE instead of self-hosted SPIRE</h3>
+    <p><a href="https://goteleport.com/compare/spire/">Teleport Workload Identity</a> issues the same SPIFFE IDs and SVIDs, serves the same Workload API, and federates with SPIRE trust domains, so standard SDKs work unmodified. It supports a wider set of attestation methods than SPIRE — including CI systems and AWS Roles Anywhere — and takes the Server operations off you.</p>
+    <p>It does not solve the part that actually blocks this framework. You still need its agent running somewhere alongside the workload, and serverless still has nowhere to put it. Worth a look the moment the Agents land on Kubernetes.</p>
+    <p class="verdict">Better on Kubernetes · same serverless gap</p>
+  </div>
 
-  <p><code>RoleSessionName</code> is required on every <code>AssumeRoleWithWebIdentity</code> call. Two to sixty-four characters, caller's choice, and it lands in the assumed-role ARN and in CloudTrail. It is the only caller-supplied identity string in this mesh that reaches a Cloud provider's audit log, and it is currently set to a constant. Putting a run correlator there would make a CloudTrail entry traceable to a specific run. The cost is one STS call per run rather than one per process.</p>
+  <div class="opt weak">
+    <h3>5. Run your own OIDC issuer</h3>
+    <p>The tempting shortcut. Take the platform-attested metadata token, exchange it for a JWT you sign with whatever claims you want, publish a JWKS, and point the AWS and Entra trust policies at that. It is SPIRE's discovery provider without SPIRE, and it gets you the claims control that motivated the whole exercise.</p>
+    <p>It also makes you an identity provider. Key rotation, signing key custody and availability all become yours, and you inherit the public-endpoint failure mode — if the JWKS is unreachable, every leg stops — without any of the attestation machinery that justified it. I would want a much stronger reason than claims to take this on.</p>
+    <p class="verdict">Do not start here</p>
+  </div>
 
-  <p>And before any of that, the run record needs a requester field. Until a run carries who asked for it, the audit trail names the coordinator as the actor for everything — which is the original complaint in all these articles, correctly aimed, and fixable without a new identity system.</p>
+  <div class="opt weak">
+    <h3>6. One egress broker in front of everything</h3>
+    <p>Put a single authenticated proxy in front of all cross-Cloud calls. It holds the three federations, and Agents authenticate to it locally. Attractive because the credential work happens once.</p>
+    <p>It also builds exactly the target you least want: one service holding credentials for every Cloud, with a wide front door. Reviewing this project for these articles turned up its coordinator open to the internet on a public invoker binding — a surface with three sets of federated credentials behind it. Closing it took a revoked binding and a redeployed flag. A broker makes that surface the architecture rather than the accident.</p>
+    <p class="verdict">Concentrates the risk</p>
+  </div>
+
+  <h2>What I Would Do on This Framework</h2>
+
+  <p>Options one, two and three, in that order, and none of them needs a new identity system.</p>
+
+  <p>Keep native federation for the credential. Add the delegation context to the A2A message where the protocol already has a slot for it. Fill in the Agent Card so the scheme is declared rather than discovered by failure.</p>
+
+  <p>Then two small things that are worth more than they look. The run record needs a requester field — until a run carries who asked for it, the audit trail names the coordinator as the actor for everything, which is the original complaint in all these articles and is fixable in an afternoon. And <code>RoleSessionName</code> on <code>AssumeRoleWithWebIdentity</code> is caller's choice, two to sixty-four characters, and lands in CloudTrail. It is the only caller-supplied identity string in this mesh that reaches a Cloud provider's audit log, and it is currently a constant. A run correlator there makes a CloudTrail entry traceable to a specific run, for one extra STS call per run.</p>
 
   <h2>Summary</h2>
 
-  <p>Three Agents are deployed across GCP, AWS and Azure with a coordinator on Cloud Run, federating three ways with no stored secrets and eight controls confirming it.</p>
+  <p>A2A is not the constraint on multi-Cloud Agents. Three Agents are deployed across GCP, AWS and Azure with a coordinator on Cloud Run, federating three ways with no stored secrets, and the protocol never needed a change to make that work. The auth strategy is what took the effort and what would break first.</p>
 
-  <p>Against that framework, SPIFFE and SPIRE do not currently fit — the runtimes are serverless and SPIRE needs a node to attest, and the agentless design for that has been open since 2020. The gain on offer is collapsing three copies of one identity into one trust domain, which is a scale argument that this mesh has not reached.</p>
+  <p>SPIFFE and SPIRE are the usual recommendation and they do not currently fit this shape of deployment, because SPIRE needs a node to attest and serverless runtimes do not have one. That is a statement about serverless rather than about SPIFFE — on Kubernetes the calculation is completely different.</p>
 
-  <p>The argument that would change my mind is not scale. It is claims: SPIRE lets you decide what goes in the token, and the metadata server does not. That matters the moment a person is in the chain, and it does not matter until then.</p>
+  <p>The alternatives are better than the silence around them suggests. Native federation already covers the credential. The A2A extension mechanism already has a place to carry the delegation context that the Cloud minters refuse to carry. Between those two, most of what the Agent-identity articles are asking for is available today without installing anything.</p>
 
   <footer class="colophon">
     <div>Measured 25 August 2026 · deployed mesh, single runs</div>

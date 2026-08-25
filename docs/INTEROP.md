@@ -39,18 +39,43 @@ because no session policy allows the bedrock-agentcore:InvokeAgentRuntime action
 Container exit 3 — `NO_DRAFTS_EXIT`, this CLI's only code for *denied*. The
 positive control on the same build and the same leg exits 0.
 
-Two things in that message are worth more than the pass/fail:
+Then the mirror: the same probe with the session policy allowing only
+`bedrock-agentcore:InvokeAgentRuntime`. It fails *earlier*, on the card:
+
+```text
+A2A endpoint returned 403 for
+  …/runtimes/<arn>/invocations/.well-known/agent-card.json
+{"message":"User: …/research-mesh-master is not authorized to perform:
+bedrock-agentcore:GetAgentCard on resource: …/research_aws-Renyp76J4J
+because no session policy allows the bedrock-agentcore:GetAgentCard action"}
+```
+
+The pair is the result. Neither action can stand in for the other, in either
+direction, under a session that the role would otherwise have permitted:
+
+| session policy allows | card fetch | invocation |
+|---|---|---|
+| `GetAgentCard` only | 200 | **403** `InvokeAgentRuntime` |
+| `InvokeAgentRuntime` only | **403** `GetAgentCard` | not reached |
+| neither (unattenuated) | 200 | 200 |
+
+Two things in those messages are worth more than the pass/fail:
 
 - **AWS names the session policy as the cause** — "because no session policy
   allows" — so an attenuation denial is distinguishable in the error text from
   a role-policy denial, which reads "no identity-based policy allows". That is
   the rarest thing in this space: a provider error that says which of two
   layers refused.
-- **The denial names `InvokeAgentRuntime`, not `GetAgentCard`.** The leg
-  reached the invocation, so discovery had already been authorised under the
-  same attenuated session — which is the 2026-08-12 finding above holding under
-  a second, narrower grant. Discovery and invocation are separately authorised,
-  and they are separately *attenuable*.
+- **The 2026-08-12 finding holds under a second, narrower grant.** Discovery
+  and invocation are separately authorised, and they are separately
+  *attenuable*. The invoke-only run is what proves the card fetch genuinely
+  succeeded in the card-only run rather than being skipped: when discovery is
+  the denied action, the leg never reaches the invocation at all.
+
+Incidentally recorded by the mirror: AgentCore serves the agent card from
+`…/invocations/.well-known/agent-card.json` — the card path appended to the
+invocations path, which is why the same credential and the same session header
+have to cover both.
 
 Off by default: `AWS_A2A_SESSION_POLICY` unset or empty means unattenuated. STS
 rejects an empty `Policy` outright, so a bug that sent one whenever the variable

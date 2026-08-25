@@ -238,6 +238,23 @@ ran, and no cloud returned a draft. It is the only code that means *denied* and
 the only one this CLI can emit, which is what makes these results readable at
 all — see below.
 
+**Re-run 2026-08-25, on the current build.** The item below about controls not
+having been re-run since the agents were rebuilt is now closed: all eight
+probes above were re-run against the deployed mesh and all eight hold, with the
+front-end row now reading 403 rather than the deliberate 200 of the open
+period. Two rows are new, and they are the first measurement here of a
+permission *shrinking* rather than being present or absent:
+
+| probe | result |
+|---|---|
+| AWS leg, session policy allows `GetAgentCard` only | exit 3, **denied** — `InvokeAgentRuntime` |
+| AWS leg, session policy allows `InvokeAgentRuntime` only | exit 3, **denied** — `GetAgentCard`, on the card fetch |
+
+Both denials name the *session policy* as the reason, which distinguishes them
+from a role-policy denial in the error text. The pair also settles that
+discovery is separately authorised from invocation under attenuation, in both
+directions. See `docs/INTEROP.md`.
+
 **The Azure leg was serving the internet.** Its negative control answered
 without a credential, and a direct check confirmed `/health`, the agent card
 *and* the JSON-RPC invoke endpoint all returned 200 to an anonymous caller —
@@ -870,11 +887,13 @@ them, and nothing fails when it rots.
   genuine; the other two started from a provider error that had been scored as
   a draft. The guard that stops that landed 2026-08-14, so the evidence for
   this has to be gathered again from runs after it.
-- **The controls have not been re-run since the agents were rebuilt for
-  `INSTRUCTION` v2 and v3.** They passed on 2026-08-13 and found the open Azure
-  ingress, which is the strongest thing this project has done — but their
-  subject has been redeployed since, and a control that passed against an
-  earlier image is a claim about that image.
+- ~~**The controls have not been re-run since the agents were rebuilt for
+  `INSTRUCTION` v2 and v3.**~~ **Re-run 2026-08-25**, against a freshly built
+  image, and 8/8 hold — including the Azure negative control, the one that
+  found the open Azure ingress on 2026-08-13. The point that put this item here
+  stands generally, though: a control that passed against an earlier image is a
+  claim about that image, and this list will be wrong again the next time the
+  agents are rebuilt without a re-run.
 - **The wrong-audience probe covers GCP only.** AWS and Azure have a positive
   control and a credential-removed control; neither has been offered a valid
   token minted for the wrong audience, which is the probe that separates *this

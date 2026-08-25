@@ -15,7 +15,11 @@ participants.
 
 **A service, not a job.** This is the coordinator, and the coordinator holds an
 address: a person with a question needs somewhere to send it, and a scheduled
-run is a POST from Cloud Scheduler with an OIDC token. Deploying a second copy
+run would be a POST from Cloud Scheduler with an OIDC token. That last clause
+was written in the future tense and then read as present: checked 2026-08-25,
+the Cloud Scheduler API is not enabled on the deployment's project and no such
+job exists. The argument for a service stands on the first half — an address —
+and does not need the second. Deploying a second copy
 of this code as a Cloud Run job to do the same work in a different execution
 model is how the project ended up, for a while, with a job named
 ``research-coordinator`` standing in for a front door that had never been

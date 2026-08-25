@@ -22,6 +22,21 @@ in git — it was recovered a week later out of a Cloud Build source tarball, an
 the tests written that day were gone for good, because `.gcloudignore` excludes
 `tests/` and `docs/`. Deploy, then document, then *commit*.
 
+**It happened again, at full scale.** On 2026-08-25 this project had no `.git`
+at all and no remote — 150 files, a 48KB README, the whole auth adapter, every
+deploy script, existing on one disk only. Every sibling project in `~` had a
+repository; this one never got `git init`. Now at
+[xbill9/multicloud-a2a-identity](https://github.com/xbill9/multicloud-a2a-identity).
+
+Two things that rule-writing got wrong the first time. The lesson was recorded
+as a *sequencing* rule — deploy, document, commit — which reads as advice about
+when to commit and is silent on whether a repository exists at all; the failure
+mode it actually describes is not "committed late" but "never initialised".
+And `.gcloudignore` excluding `tests/` and `docs/` was never the defect: those
+do not belong in a container build context. The defect was treating a build
+tarball as a backup. **Check `git rev-parse --is-inside-work-tree` before
+anything else in a session that will deploy.**
+
 ## Ground rule: commit straight to master
 
 **Never create a branch and never open a pull request.** This is a small

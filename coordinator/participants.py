@@ -1,0 +1,167 @@
+"""The single interface every cloud plugs into.
+
+The two-cloud benchmarks had two protocols with identical shapes, an artifact
+of two transports being wired in one at a time. A mesh has no such asymmetry:
+an in-process stub and a remote agent on another continent are both just named
+draft sources.
+
+``DraftSource`` deliberately says nothing about credentials. The credential is
+a property of the *leg*, not of the conversion, and it is resolved once when
+the source is constructed -- ``credentials_for(peer, endpoint)`` in
+``coordinator.auth``, re-exported here because this is the interface it hangs
+off. One adapter, three implementations, one shape; adding a fourth cloud
+means adding a mode, not a code path.
+
+The alternative is what the predecessor series did: three bespoke auth paths
+retrofitted after the fact, one per repo, which is why its findings ended up
+scattered across six of them.
+"""
+
+import os
+from dataclasses import dataclass
+from typing import Protocol
+
+from clients import load_client
+from coordinator.auth import auth_mode, credentials_for
+from coordinator.models import Draft, ResearchRequest
+
+#: Every cloud the mesh can call, and the environment variable that points at
+#: its agent. One definition, shared by the CLI, the master service and the
+#: matrix, because the alternative -- a copy per entry point -- is how a fourth
+#: cloud ends up wired into two of the three and silently missing from the
+#: third.
+CLOUD_ENDPOINTS: dict[str, tuple[str, str]] = {
+    "gcp": ("GCP_A2A_ENDPOINT", "http://127.0.0.1:10001"),
+    "aws": ("AWS_A2A_ENDPOINT", "http://127.0.0.1:10002"),
+    "azure": ("AZURE_A2A_ENDPOINT", "http://127.0.0.1:10003"),
+}
+
+
+class DraftSource(Protocol):
+    #: ``revision`` carries the previous draft and the judge's critique when
+    #: this is a second or later round. Optional rather than a separate method
+    #: so a source that does not implement the loop -- an in-process stub, a
+    #: third-party A2A server that never heard of this repo -- keeps working
+    #: unchanged and simply answers the brief again.
+    async def research(
+        self, request: ResearchRequest, revision: "Revision | None" = None
+    ) -> Draft: ...
+
+
+@dataclass(frozen=True)
+class Revision:
+    """One draft sent back for another round, with the reason.
+
+    Crosses the wire as prose inside the next prompt -- see
+    ``protocol.research.build_revision_prompt``. There is no session on the far
+    side: a researcher is a stateless A2A peer, so the previous draft has to
+    travel with the request that asks for its replacement.
+    """
+
+    previous: str
+    critique: str
+    score: float
+    maximum: float
+    #: The round being *requested*. 2 is the first rewrite.
+    round: int
+
+
+@dataclass(frozen=True)
+class Participant:
+    """A named draft source, plus the metadata the reports need."""
+
+    name: str
+    source: DraftSource
+    cloud: str = "local"
+    stack: str = "in-process"
+    #: How this leg authenticates: one of ``coordinator.auth.AUTH_MODES``.
+    #: Reported rather than inferred, so a leg that silently fell back to an
+    #: unauthenticated call cannot be mistaken for a federated one.
+    auth: str = "none"
+
+    def __str__(self) -> str:
+        return self.name
+
+
+#: How long one leg may take, for *both* entry points.
+#:
+#: It lived as an argparse default in `coordinator/cli.py` and separately as an
+#: env read in `coordinator/service.py`, so the deployed master honoured
+#: `RESEARCH_TIMEOUT_SECONDS` and the CLI silently did not. That is not a
+#: cosmetic split: the negative-controls harness runs the CLI, so on
+#: 2026-08-13 the controls ran with a 120s limit against a mesh the master was
+#: running at 300s -- and the Azure leg, which takes 54s and 33s per
+#: invocation across two rounds, failed its *positive* control while answering
+#: the master perfectly. A control that runs a different configuration from the
+#: thing it is controlling is not a control.
+#:
+#: This module already exists to be the single definition of what a peer is,
+#: for exactly this reason, and the timeout is part of that definition.
+DEFAULT_TIMEOUT_SECONDS = 120.0
+
+
+def default_timeout_seconds() -> float:
+    try:
+        return float(os.getenv("RESEARCH_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
+    except ValueError:
+        return DEFAULT_TIMEOUT_SECONDS
+
+
+def endpoint_for(cloud: str) -> str:
+    """Where ``cloud``'s researcher agent lives, defaulting to the local mesh."""
+    env_var, default = CLOUD_ENDPOINTS[cloud]
+    return os.getenv(env_var, default)
+
+
+def build_participants(
+    clouds: list[str] | None = None,
+    *,
+    client: str = "a2a-sdk",
+    timeout_seconds: float = 120.0,
+) -> list[Participant]:
+    """One participant per cloud, each with its own leg's credential resolved.
+
+    The credential is resolved *here*, at construction, rather than per call:
+    a leg that cannot mint its credential should fail while the mesh is being
+    assembled, not halfway through a fan-out where it is indistinguishable
+    from the remote being down.
+    """
+    selected = clouds or list(CLOUD_ENDPOINTS)
+    unknown = [cloud for cloud in selected if cloud not in CLOUD_ENDPOINTS]
+    if unknown:
+        raise ValueError(f"unknown cloud(s): {', '.join(unknown)}")
+
+    participants: list[Participant] = []
+    for cloud in selected:
+        endpoint = endpoint_for(cloud)
+        auth = credentials_for(cloud, endpoint)
+        participants.append(
+            Participant(
+                name=cloud,
+                source=load_client(
+                    client,
+                    endpoint,
+                    source=cloud,
+                    cloud=cloud,
+                    timeout_s=timeout_seconds,
+                    auth=auth,
+                ),
+                cloud=cloud,
+                stack=client,
+                auth=auth_mode(auth),
+            )
+        )
+    return participants
+
+
+__all__ = [
+    "CLOUD_ENDPOINTS",
+    "DEFAULT_TIMEOUT_SECONDS",
+    "DraftSource",
+    "Participant",
+    "auth_mode",
+    "build_participants",
+    "credentials_for",
+    "default_timeout_seconds",
+    "endpoint_for",
+]

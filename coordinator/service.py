@@ -1,0 +1,713 @@
+"""The master: front end, fan-out and judge, on one Cloud Run service.
+
+This is the front door. A brief arrives here, goes out to every researcher
+agent over A2A, and the judge -- running in this same process -- reads the
+drafts that came back and ranks them.
+
+**Why the judge is in-process and not a fourth agent.** It has to see all three
+drafts to rank them, so it is the one step in the system that cannot start
+until the slowest cloud has answered. Putting it behind another network hop
+would add a leg that can fail *after* every expensive call has already
+succeeded, and lose three drafts to a judge timeout. It is a pure function of
+the drafts; it does not need its own address. The cost is stated in the README
+and not argued away: the judge shares a vendor with one of the three
+participants.
+
+**A service, not a job.** This is the coordinator, and the coordinator holds an
+address: a person with a question needs somewhere to send it, and a scheduled
+run is a POST from Cloud Scheduler with an OIDC token. Deploying a second copy
+of this code as a Cloud Run job to do the same work in a different execution
+model is how the project ended up, for a while, with a job named
+``research-coordinator`` standing in for a front door that had never been
+deployed at all.
+
+``coordinator/cli.py`` still exists, for local runs and for the negative
+controls, which are the one thing a job is genuinely better at -- they need a
+per-execution environment override and an exit code to assert on. Both entry
+points build their mesh through
+``coordinator.participants.build_participants``, so there is one definition of
+what a peer is and they cannot drift apart on which clouds are wired or how a
+leg authenticates.
+
+Deployed from source with no Dockerfile -- see ``Procfile`` and
+``infra/deploy_gcp.sh``.
+
+    uvicorn coordinator.service:app --port 8080     # local, against the local mesh
+
+Environment: ``PORT``, ``RESEARCH_JUDGE_MODE``, ``RESEARCH_TIMEOUT_SECONDS``,
+``RESEARCH_EVAL_STORE``, plus the per-peer ``*_A2A_ENDPOINT`` and
+``*_A2A_AUTH`` pairs that ``coordinator.auth`` reads.
+"""
+
+import asyncio
+import json
+import logging
+import os
+from collections import deque
+from time import monotonic
+from urllib.parse import urlsplit
+
+from pydantic import ValidationError
+from starlette.applications import Starlette
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
+from starlette.routing import Route
+
+from clients import CLIENT_STACKS
+from coordinator import sources as sources_mod
+from coordinator.errors import AdapterError
+from coordinator.events import BUS
+from coordinator.flow import build_flow
+from coordinator.frontend import PAGE
+from coordinator.judge import JUDGE_MODES, judge_mode, load_judge
+from coordinator.mesh import ResearchMesh
+from coordinator.models import ResearchRequest
+from coordinator.participants import (
+    CLOUD_ENDPOINTS,
+    build_participants,
+    default_timeout_seconds,
+    endpoint_for,
+)
+from coordinator.timeline import render as render_timeline
+from evaluations import feedback as feedback_store
+from evaluations import panel as panel_view
+from evaluations.report import aggregate
+from evaluations.report import render as render_audit
+from evaluations.store import load as load_runs
+from evaluations.store import record, store_path
+from protocol.telemetry import (
+    instrument_app,
+    span,
+    telemetry_summary,
+)
+from protocol.telemetry import (
+    setup as setup_telemetry,
+)
+
+logging.basicConfig(format="[%(levelname)s]: %(message)s", level=logging.INFO)
+log = logging.getLogger("master")
+
+# Before the mesh builds any client: httpx has to be instrumented before a
+# vendor SDK constructs its own, or that SDK's calls never reach the trace.
+setup_telemetry("research-master")
+
+DEFAULT_TIMEOUT = default_timeout_seconds()
+
+#: Whether this master is served open to the internet. Set by `PUBLIC=1` on the
+#: deploy, and reported on /health rather than inferred: "is this thing public"
+#: is not a question anyone should have to answer by trying it from a logged-out
+#: browser.
+PUBLIC = os.getenv("RESEARCH_PUBLIC", "").strip() == "1"
+
+#: Limits on the one expensive endpoint, enforced only when public.
+#:
+#: A private master's caller has already proved who they are and a limiter would
+#: only get in their way. An open one is a different object: `POST
+#: /api/research` fans out to three clouds, spends real money at three vendors
+#: and holds a container for 30 to 120 seconds, so without these the demo is a
+#: bill with a URL. Read-only views stay unlimited -- watching is the whole
+#: point of making it public, and it costs nothing.
+MAX_CONCURRENT_RUNS = int(os.getenv("RESEARCH_MAX_CONCURRENT_RUNS", "2"))
+MAX_RUNS_PER_HOUR = int(os.getenv("RESEARCH_MAX_RUNS_PER_HOUR", "30"))
+
+_in_flight = 0
+_recent_runs: deque[float] = deque()
+
+
+def _admit() -> str:
+    """Decide whether to run one brief. Returns "" to admit, or the reason not to.
+
+    Deliberately per instance and per process rather than shared: the deploy
+    pins this service to one instance, so a counter here is the whole picture,
+    and a distributed limiter would be a database dependency bought to protect a
+    demonstrator.
+    """
+    if not PUBLIC:
+        return ""
+
+    now = monotonic()
+    while _recent_runs and now - _recent_runs[0] > 3600:
+        _recent_runs.popleft()
+
+    if _in_flight >= MAX_CONCURRENT_RUNS:
+        return (
+            f"{_in_flight} run(s) already in flight and this master allows "
+            f"{MAX_CONCURRENT_RUNS}. A run takes 30-120s; watch the live view "
+            f"and try again when it finishes."
+        )
+    if len(_recent_runs) >= MAX_RUNS_PER_HOUR:
+        return (
+            f"{len(_recent_runs)} runs in the last hour, which is this public "
+            f"demo's limit. Every run spends real money at three vendors. The "
+            f"recorded runs are all readable without one."
+        )
+    return ""
+
+#: Serialises appends to the evaluation store. The store is one file appended
+#: to by every run, and on Cloud Run it is a GCS volume where a write is a
+#: whole-object rewrite rather than an append -- two concurrent runs there lose
+#: one of themselves silently, which for an audit is the worst available
+#: failure. The deploy also pins the service to one instance; this lock is the
+#: half of that guarantee which survives someone raising --max-instances.
+_store_lock = asyncio.Lock()
+
+
+def build_mesh(
+    clouds: list[str] | None,
+    *,
+    client: str = "a2a-sdk",
+    judge: str | None = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT,
+) -> ResearchMesh:
+    """Assemble the mesh for one request. Replaced wholesale in tests."""
+    return ResearchMesh(
+        build_participants(clouds, client=client, timeout_seconds=timeout_seconds),
+        judge=load_judge(judge),
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def index(request):
+    return HTMLResponse(PAGE)
+
+
+async def health(request):
+    """What this master is wired to, without calling anything.
+
+    Configured rather than measured, and named that way in the payload: a
+    health check that dials three clouds turns a page load into a fan-out, and
+    a peer that is merely *configured* must never render as a peer that
+    answered. The mode a leg actually used is reported per run, in
+    ``auth_modes``.
+    """
+    peers = []
+    for cloud in CLOUD_ENDPOINTS:
+        endpoint = endpoint_for(cloud)
+        peers.append(
+            {
+                "cloud": cloud,
+                "endpoint": endpoint,
+                "reachable_as": urlsplit(endpoint).netloc or endpoint,
+                "auth": os.getenv(f"{cloud.upper()}_A2A_AUTH", "none").strip().lower(),
+            }
+        )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "role": "master",
+            "cloud": os.getenv("RESEARCH_COORDINATOR_CLOUD", "unknown"),
+            "judge": judge_mode(),
+            "timeout_seconds": DEFAULT_TIMEOUT,
+            "store": str(store_path()),
+            "telemetry": telemetry_summary(),
+            "public": PUBLIC,
+            "limits": (
+                {
+                    "max_concurrent_runs": MAX_CONCURRENT_RUNS,
+                    "max_runs_per_hour": MAX_RUNS_PER_HOUR,
+                    "in_flight": _in_flight,
+                    "runs_this_hour": len(_recent_runs),
+                }
+                if PUBLIC
+                else {}
+            ),
+            "peers": peers,
+        }
+    )
+
+
+async def research(request):
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+
+    try:
+        brief = ResearchRequest(
+            topic=payload.get("topic") or "",
+            questions=payload.get("questions") or [],
+            max_words=payload.get("max_words") or 600,
+        )
+    except (ValidationError, ValueError, TypeError) as exc:
+        return JSONResponse({"error": f"invalid brief: {exc}"}, status_code=400)
+
+    client = payload.get("client") or "a2a-sdk"
+    if client not in CLIENT_STACKS:
+        return JSONResponse(
+            {"error": f"unknown client stack {client!r} (expected one of {CLIENT_STACKS})"},
+            status_code=400,
+        )
+
+    judge = payload.get("judge") or None
+    if judge is not None and judge not in JUDGE_MODES:
+        return JSONResponse(
+            {"error": f"unknown judge {judge!r} (expected one of {JUDGE_MODES})"},
+            status_code=400,
+        )
+
+    refused = _admit()
+    if refused:
+        # 429 rather than 503: the mesh is fine, this master is declining.
+        return JSONResponse({"error": refused}, status_code=429)
+
+    clouds = payload.get("clouds") or None
+    try:
+        mesh = build_mesh(clouds, client=client, judge=judge, timeout_seconds=DEFAULT_TIMEOUT)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except (AdapterError, ImportError) as exc:
+        # A credential this master cannot mint, or a client SDK missing from
+        # the image. Both are this service's fault rather than the caller's,
+        # and both are invisible in a 500 with no body.
+        log.exception("could not assemble the mesh")
+        return JSONResponse({"error": f"mesh unavailable: {exc}"}, status_code=503)
+
+    global _in_flight
+    _in_flight += 1
+    _recent_runs.append(monotonic())
+    try:
+        run = await mesh.run(brief)
+    finally:
+        _in_flight -= 1
+
+    # The whole timeline into the service log, every run, before the store is
+    # touched. Two reasons, both learned here rather than assumed: the store is
+    # a mounted bucket whose write failure is caught and logged below, so a run
+    # can complete and leave no record at all; and `/api/timeline` reads the
+    # store by position, which shifts under every later run. A log line is
+    # append-only by construction, timestamped by the platform, and carries the
+    # run id that ties it back to the stored copy.
+    log.info("run %s timeline:\n%s", run.run_id, render_timeline(run))
+
+    if payload.get("record", True):
+        async with _store_lock:
+            try:
+                record(run)
+                log.info("run %s recorded to %s", run.run_id, store_path())
+            except OSError as exc:
+                # A read-only or unmounted store must not discard a completed
+                # run: the drafts cost three cross-cloud calls, the recording
+                # did not.
+                log.error("could not record run %s: %s", run.run_id, exc)
+
+    return JSONResponse(json.loads(run.model_dump_json()))
+
+
+async def last_run(request):
+    """The most recent recorded run, read back out of the store.
+
+    Read from the store rather than cached in memory on purpose: the instance
+    that served a run is not the instance that will be asked about it, and a
+    report that only works while the container is warm is a report that fails
+    exactly when someone is trying to show it to somebody.
+    """
+    try:
+        runs = list(load_runs())
+    except OSError as exc:
+        return JSONResponse({"error": f"evaluation store unreadable: {exc}"}, status_code=503)
+    if not runs:
+        return JSONResponse({"error": "no run has been recorded yet"}, status_code=404)
+    return JSONResponse(json.loads(runs[-1][1].model_dump_json()))
+
+
+async def timeline(request):
+    """The last run's calls in wall-clock order, as plain text.
+
+    The simplest thing that proves the mesh is real: one request, no browser,
+    and it shows every call that was made, what came back and when. `?n=2`
+    walks back through the store for the run before it.
+    """
+    try:
+        runs = list(load_runs())
+    except OSError as exc:
+        return PlainTextResponse(f"evaluation store unreadable: {exc}", status_code=503)
+    if not runs:
+        return PlainTextResponse("no run has been recorded yet", status_code=404)
+
+    try:
+        index = max(1, int(request.query_params.get("n", "1")))
+    except ValueError:
+        return PlainTextResponse("n must be a positive integer", status_code=400)
+    if index > len(runs):
+        return PlainTextResponse(
+            f"only {len(runs)} run(s) recorded", status_code=404
+        )
+
+    return PlainTextResponse(render_timeline(runs[-index][1]))
+
+
+async def ping(request):
+    """Echo, touching nothing.
+
+    The page samples this once a second to measure its own round trip to the
+    master, and the number is worth having for a reason beyond curiosity: every
+    latency on this page is measured from the browser, so without it a 400ms
+    reading cannot be told apart from a 300ms leg behind a 100ms link. Subtract
+    this and what is left is the mesh.
+
+    Deliberately does no work -- no store read, no peer lookup, nothing that
+    could make the ping report on anything but the link.
+    """
+    return JSONResponse({"pong": request.query_params.get("t", "")})
+
+
+async def stream(request):
+    """Server-sent events for a run in progress.
+
+    A run with models in the path takes 30 seconds to two minutes, and the page
+    used to show a spinner for all of it while the interesting part -- a
+    credential minted, a card fetched, a leg answering, a draft sent back --
+    happened invisibly in the service log.
+
+    Replays the recent buffer first, so a page opened mid-run shows what has
+    already happened rather than an empty log.
+    """
+
+    async def events():
+        # A comment frame up front: it commits the response and defeats any
+        # proxy buffering that would otherwise hold the stream until the first
+        # real event, which on a cold mesh can be seconds away.
+        yield ": open\n\n"
+        # No handler for CancelledError: the client going away is how this
+        # generator is *meant* to end, and catching it only to re-raise adds a
+        # frame that says nothing.
+        async for event in BUS.subscribe():
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def flow(request):
+    """One run, shaped for the debug view. `?n=2` walks back through the store.
+
+    Shaped on the server rather than in the page, and the reason is narrow: the
+    critique shown against each draft is rebuilt with the same
+    `judge.critique_for` the mesh called when it sent that draft back. A second
+    implementation in the browser would drift, and the drift would be invisible
+    -- the page would show a plausible critique no agent ever received.
+    """
+    try:
+        runs = list(load_runs())
+    except OSError as exc:
+        return JSONResponse({"error": f"evaluation store unreadable: {exc}"}, status_code=503)
+    if not runs:
+        return JSONResponse({"error": "no run has been recorded yet"}, status_code=404)
+
+    try:
+        index = max(1, int(request.query_params.get("n", "1")))
+    except ValueError:
+        return JSONResponse({"error": "n must be a positive integer"}, status_code=400)
+    if index > len(runs):
+        return JSONResponse({"error": f"only {len(runs)} run(s) recorded"}, status_code=404)
+
+    return JSONResponse({"total_runs": len(runs), **build_flow(runs[-index][1])})
+
+
+def _run_by_index(request):
+    """The run `?n=` names, or an error response. `n=1` is the most recent."""
+    try:
+        runs = list(load_runs())
+    except OSError as exc:
+        return None, JSONResponse(
+            {"error": f"evaluation store unreadable: {exc}"}, status_code=503
+        )
+    if not runs:
+        return None, JSONResponse({"error": "no run has been recorded yet"}, status_code=404)
+
+    raw = request.query_params.get("run_id", "")
+    if raw:
+        for _recorded, run in reversed(runs):
+            if run.run_id == raw:
+                return run, None
+        return None, JSONResponse({"error": f"no run {raw!r}"}, status_code=404)
+
+    try:
+        index = max(1, int(request.query_params.get("n", "1")))
+    except ValueError:
+        return None, JSONResponse({"error": "n must be a positive integer"}, status_code=400)
+    if index > len(runs):
+        return None, JSONResponse({"error": f"only {len(runs)} run(s) recorded"}, status_code=404)
+    return runs[-index][1], None
+
+
+async def lineage(request):
+    """Every version of every draft, with the critique each one earned.
+
+    The chain a reviewer reads: what a cloud wrote, what the judge said about
+    it, what it wrote next. Until draft versions were kept this could not be
+    built at all -- a rewrite overwrote the text its critique was about, so
+    "did it fix what the judge complained about" had nothing to compare.
+    """
+    run, error = _run_by_index(request)
+    if error is not None:
+        return error
+
+    from coordinator.judge import critique_for
+
+    verdicts = run.rounds or ([run.verdict] if run.verdict else [])
+    chains = []
+    for name in run.participants:
+        steps = []
+        for draft in run.lineage(name):
+            verdict = next(
+                (
+                    entry
+                    for round_verdict in verdicts
+                    if round_verdict is not None
+                    for entry in round_verdict.verdicts
+                    if entry.source == name
+                    and verdicts.index(round_verdict) == draft.round - 1
+                ),
+                None,
+            )
+            steps.append(
+                {
+                    "round": draft.round,
+                    "model": draft.model,
+                    "brain": draft.brain,
+                    "title": draft.title,
+                    "body": draft.body,
+                    "words": draft.word_count,
+                    "searches": draft.searches,
+                    "latency_ms": draft.latency_ms,
+                    "total": verdict.total if verdict else None,
+                    "scores": (
+                        [
+                            {"dimension": s.dimension, "score": s.score, "rationale": s.rationale}
+                            for s in verdict.scores
+                        ]
+                        if verdict
+                        else []
+                    ),
+                    "critique": critique_for(verdict) if verdict else "",
+                    "citations": sources_mod.extract_urls(draft.body),
+                }
+            )
+        chains.append({"source": name, "auth": run.auth_modes.get(name, "none"), "steps": steps})
+
+    return JSONResponse(
+        {
+            "run_id": run.run_id,
+            "topic": run.request.topic,
+            "winner": run.verdict.winner if run.verdict else None,
+            "judge": run.verdict.judge if run.verdict else "",
+            "rounds": run.round_count,
+            "chains": chains,
+            "feedback": [r.model_dump(mode="json") for r in feedback_store.for_run(run.run_id)],
+        }
+    )
+
+
+async def source_fetch(request):
+    """Open one URL a draft cited, and say what came back.
+
+    Only a URL that appears in a draft of the named run can be fetched. The
+    caller does not choose the target; the corpus does. This master is deployed
+    open to the internet and holds federated credentials for three clouds, so an
+    endpoint that fetched an arbitrary URL would be a server-side request
+    forgery hole pointed at a credentialed host -- see `coordinator/sources.py`.
+    """
+    run, error = _run_by_index(request)
+    if error is not None:
+        return error
+
+    url = request.query_params.get("url", "").strip()
+    if not url:
+        return JSONResponse({"error": "url is required"}, status_code=400)
+
+    result = await sources_mod.fetch(url, sources_mod.known_urls(run))
+    # A refusal is a 200 carrying `ok: false`: the page renders it beside the
+    # citation as a verdict, and an HTTP error code here would read as this
+    # service failing rather than as that citation not resolving.
+    return JSONResponse(result)
+
+
+async def feedback(request):
+    """Read or record what a person thought of a run.
+
+    Never changes a verdict. The judge said what it said, and this records
+    disagreement rather than resolving it -- a scorer quietly corrected by its
+    reviewers measures nothing.
+    """
+    if request.method == "GET":
+        run_id = request.query_params.get("run_id", "").strip()
+        reviews = feedback_store.for_run(run_id) if run_id else list(feedback_store.load())
+        return JSONResponse([review.model_dump(mode="json") for review in reviews])
+
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+
+    try:
+        review = feedback_store.HumanReview.model_validate(payload)
+    except ValidationError as exc:
+        return JSONResponse({"error": f"invalid review: {exc}"}, status_code=400)
+
+    bad = [
+        citation.verdict
+        for draft in review.drafts
+        for citation in draft.citations
+        if citation.verdict not in feedback_store.CITATION_VERDICTS
+    ]
+    if bad:
+        return JSONResponse(
+            {
+                "error": f"unknown citation verdict(s) {sorted(set(bad))}; "
+                f"expected one of {list(feedback_store.CITATION_VERDICTS)}"
+            },
+            status_code=400,
+        )
+
+    try:
+        # `span` is a sync context manager; the lock is async. Nesting rather
+        # than combining, because `async with a, b` requires both to be async.
+        async with _store_lock:
+            with span(
+                "research.feedback",
+                **{
+                    "research.run_id": review.run_id,
+                    "research.reviewer": review.reviewer,
+                    "research.human_winner": review.winner or "none",
+                },
+            ):
+                feedback_store.record(review)
+    except OSError as exc:
+        log.error("could not record feedback for %s: %s", review.run_id, exc)
+        return JSONResponse({"error": f"could not record: {exc}"}, status_code=503)
+
+    BUS.publish(
+        "feedback",
+        f"{review.reviewer} reviewed {review.run_id}: "
+        f"would pick {review.winner or 'no one'}"
+        + (f", ranked {' > '.join(review.ranking)}" if review.ranking else "")
+        + (
+            f", {sum(len(d.citations) for d in review.drafts)} citation verdict(s)"
+            if any(d.citations for d in review.drafts)
+            else ""
+        ),
+        run_id=review.run_id,
+        reviewer=review.reviewer,
+        winner=review.winner,
+        ranking=review.ranking,
+    )
+    log.info(
+        "feedback recorded for run %s by %s: winner=%s ranking=%s",
+        review.run_id,
+        review.reviewer,
+        review.winner,
+        review.ranking,
+    )
+    return JSONResponse({"recorded": True, "run_id": review.run_id})
+
+
+async def calibration(request):
+    """How often a human and the judge picked the same winner.
+
+    The one number here that can say the instrument is wrong.
+    """
+    try:
+        # The judge's whole ranking, not just its winner: a review yields one
+        # comparison per pair of drafts, and throwing away all but the top one
+        # wastes most of what the reviewer just did.
+        # `complete` travels with the ranking: a run that lost a leg cannot
+        # calibrate a scorer, and the exclusion belongs in the aggregate rather
+        # than in whoever is reading it.
+        winners = {}
+        for _recorded, run in load_runs():
+            verdict = run.verdict
+            winners[run.run_id] = feedback_store.JudgeRanking(
+                ranking=(verdict.ranking if verdict else []),
+                complete=run.complete,
+                rubric_version=(verdict.rubric_version if verdict else 0),
+                # Read off the drafts: the run does not carry one prompt
+                # version, the agents do, and a mesh mid-rollout can legitimately
+                # answer with two. The lowest is the honest label for the set.
+                prompt_version=min(
+                    (d.prompt_version for d in run.drafts if d.prompt_version >= 0),
+                    default=0,
+                ),
+                scores={
+                    entry.source: {s.dimension: s.score for s in entry.scores}
+                    for entry in (verdict.verdicts if verdict else [])
+                },
+            )
+    except OSError as exc:
+        return JSONResponse({"error": f"evaluation store unreadable: {exc}"}, status_code=503)
+
+    result = feedback_store.agreement(winners)
+    result["runs_recorded"] = len(winners)
+    return JSONResponse(result)
+
+
+async def panel(request):
+    """What the panel buys over any one cloud in it.
+
+    The project's actual claim, and not a benchmark: a brief answered by three
+    clouds beats the same brief answered by any one of them. Rotation says a
+    panel is justified, regret says what committing to one would cost, and
+    availability says how often one would have left you with nothing.
+    """
+    try:
+        runs = [run for _recorded, run in load_runs()]
+    except OSError as exc:
+        return PlainTextResponse(f"evaluation store unreadable: {exc}", status_code=503)
+
+    summary = panel_view.summarise(runs)
+    if request.query_params.get("format") == "json":
+        return JSONResponse(summary)
+    return PlainTextResponse(panel_view.render(summary))
+
+
+async def audit(request):
+    try:
+        text = render_audit(aggregate(list(load_runs())))
+    except OSError as exc:
+        return PlainTextResponse(f"evaluation store unreadable: {exc}", status_code=503)
+    return PlainTextResponse(text)
+
+
+app = Starlette(
+    routes=[
+        Route("/", index),
+        Route("/health", health),
+        Route("/api/health", health),
+        Route("/api/research", research, methods=["POST"]),
+        Route("/api/last", last_run),
+        Route("/api/timeline", timeline),
+        Route("/api/ping", ping),
+        Route("/api/stream", stream),
+        Route("/api/flow", flow),
+        Route("/api/lineage", lineage),
+        Route("/api/source", source_fetch),
+        Route("/api/feedback", feedback, methods=["GET", "POST"]),
+        Route("/api/calibration", calibration),
+        Route("/api/panel", panel),
+        Route("/api/audit", audit),
+    ]
+)
+instrument_app(app)
+
+
+def main() -> None:
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8080")),
+    )
+
+
+if __name__ == "__main__":
+    main()

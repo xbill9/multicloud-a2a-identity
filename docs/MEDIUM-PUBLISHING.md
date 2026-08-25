@@ -1,0 +1,190 @@
+# Getting the article into Medium
+
+## Why this file exists
+
+There are two versions of the same article and exactly one reason for that:
+**Medium does not render markdown tables at all.** Pasting one produces a wall
+of pipe characters. So the Medium version carries the same prose with every
+table rendered as an image instead.
+
+| file | venue | tables |
+|---|---|---|
+| `article-devto-framework.md` | dev.to | markdown tables, rendered natively |
+| `article-medium-framework.md` | Medium | nine images, generated from the same numbers |
+
+The prose is the same argument, word for word, with two deliberate exceptions
+noted at the bottom.
+
+> The older pair, `article-medium.md` and `article-cross-cloud-auth.md`,
+> describe the **predecessor** currency mesh. They are accurate about what was
+> deployed then and stale about what this repo now is. The steps below apply to
+> them too; the image list does not.
+
+## The import route, which is the one to use
+
+Everything below this section is the manual paste route. It works and it is
+slow. **Import is faster and now loses nothing**, so use it unless it breaks.
+
+```bash
+python3 docs/make_gists.py       # only if a code block changed
+python3 docs/make_preview.py --web
+git add -A && git commit && git push     # Pages must serve it before importing
+```
+
+`make_preview.py --web` prints an **import URL** for each article, pointing at
+`docs/import/<slug>-<sha10>.html`. Wait for Pages to serve it, then paste that
+URL into `medium.com/p/import`. It arrives as a draft.
+
+Three things about that flow, each of which cost a wasted import to learn:
+
+- **Use the printed import URL, never `medium-<slug>.html`.** Medium's importer
+  caches by URL *and ignores the query string* — `?v=2` does not defeat it.
+  Measured 2026-08-23: a page whose code blocks had just been replaced with
+  gists imported as the previous version, twice, while curl on the same URL
+  returned the new one. The content-addressed name means Medium can never have
+  seen the URL before, so there is nothing to serve stale.
+
+- **Medium's importer makes no embeds, from any markup.** Measured 2026-08-23
+  with one page carrying the same gist five ways: a bare URL, an anchor, a
+  figure wrapping an anchor and a figure with `data-oembed-url` all arrived as
+  plain links, and an `<iframe>` to the gist `.pibb` endpoint was dropped
+  outright. Zero iframes on the imported page. Do not spend another import
+  looking for the markup that works; there isn't one.
+
+- **Code lives in gists, not in the page.** Medium's importer flattens every
+  `<pre>` to one line, and strips `<br>`, so a nine-line Dockerfile arrives as
+  one scrolling line. So each multi-line block is rendered as a PNG by
+  `make_code_images.py` and captioned with a link to the gist
+  `make_gists.py` put it in: the image guarantees it renders, the gist keeps it
+  copyable, and neither on its own does both. Single-line blocks stay inline —
+  nothing to flatten in a one-line `curl`.
+
+  Regenerate in order: `make_gists.py`, then `make_code_images.py`, then
+  `make_preview.py --web`.
+
+- **Never put a link in a `<figcaption>`.** Medium's importer drops the entire
+  figure if its caption contains an `<a>` — silently, with no error. This cost
+  the most time of anything here: every code figure was dropped from two
+  articles across four imports, while the table figures, identical but for
+  plain-prose captions, imported every time. So the caption is the filename
+  alone and the gist link goes in a paragraph *after* the figure, where a link
+  imports without trouble. Verified: framework 18 of 18 images, gde 10 of 10,
+  aws 11 of 11.
+
+- **Medium strips HTML comments, even correctly escaped ones.** The provenance
+  header `<!-- a2a-research ... -->` is served escaped inside `<pre><code>` and
+  is still removed. It is a single-line block, so it needs an image despite the
+  multi-line rule — `needs_image()` in `make_gists.py` covers both cases, and
+  `make_preview.py` imports it so the two cannot drift.
+
+- **Images need no work at all.** Medium fetches them, rehosts them at 800px
+  and takes the `<figcaption>` as the caption. That is the whole of step 2
+  below, done automatically.
+
+After the import: check the subtitle took (step 5 below), and set the images
+full width.
+
+## The steps, by hand
+
+1. Open a new Medium story and paste the body of `article-medium-framework.md`,
+   starting at the H1. Medium keeps `#`/`##`, `>`, backtick fences, bold and
+   italics from pasted markdown. It drops image references, because it cannot
+   resolve a relative path.
+
+2. Upload the nine images by hand, in order, at the point each `![...]` line
+   sits. Delete the `![...]` line once its image is in place.
+
+   | # | file | section |
+   |---|---|---|
+   | 1 | `img/medium/01-three-stacks.png` | opening |
+   | 2 | `img/medium/02-held-constant.png` | What actually has to be the same |
+   | 3 | `img/medium/03-bad-card.png` | The agent card advertises an address you cannot dial |
+   | 4 | `img/medium/04-platform-contracts.png` | The platform edits your request |
+   | 5 | `img/medium/05-session-cold-start.png` | The platform edits your request |
+   | 6 | `img/medium/06-three-models.png` | The models differ mostly where a rubric cannot see |
+   | 7 | `img/medium/07-scorer-changes-the-answer.png` | same section |
+   | 8 | `img/medium/08-availability.png` | same section |
+   | 9 | `img/medium/09-search-use.png` | Tool parity in availability is not tool parity in use |
+
+3. **Paste each image's alt text into Medium's caption field.** The alt text in
+   the article states every number in words. Every table in this piece is an
+   image, so without captions a screen reader — and Medium's own search index —
+   gets nothing from a third of the article. The alt-text field is behind the
+   image's settings control; the caption is the visible line under it. Use both.
+
+4. Set the images to full width. They render 1500px wide, which is enough for
+   Medium's largest layout on a retina screen.
+
+5. The `###` line under the H1 becomes Medium's subtitle if pasted as the second
+   block. Check that it did — Medium sometimes takes the first paragraph instead.
+
+   Section headings below that are `####`, not `##`. Medium has exactly two
+   heading sizes, so `#`/`##` all land on the big one and a piece with a dozen
+   sections reads as a dozen titles. `####` lands on the small one, which is
+   what a section heading should be. dev.to renders it the same way. All three
+   articles are converted.
+
+6. Leave the console blocks as text. Medium renders fenced code fine, and the
+   two in this piece (the interop matrix and the version-mismatch error) are
+   narrow enough not to wrap.
+
+   **Medium's importer flattens every code block.** Measured 2026-08-23 by
+   importing `medium-aws.html` at `medium.com/p/import`: a nine-line
+   Dockerfile arrived as `ENV HOST=0.0.0.0 \ PORT=9000 \
+   RESEARCH_MODEL_MODE=direct EXPOSE 9000 CMD [...]` on one scrolling line,
+   and all fourteen blocks did the same. Emitting `<br>` instead of newlines
+   does not help -- the importer strips those too, measured the same day on a
+   second import. So **after importing, every code block has to be re-pasted
+   by hand** in the Medium editor, where multi-line paste works fine. Prose,
+   headings, links and images all survive the import; the code does not.
+   Untested alternative if this becomes worth automating: a bare `<pre>` with
+   no nested `<code>`, or gist embeds, which Medium renders natively.
+
+   **72 columns is the budget.** Anything wider wraps, and a wrapped aligned
+   transcript is worse than no transcript. The AWS piece quotes the deployed
+   run's timeline, which is 110 columns as captured -- it carries only the AWS
+   rows, with the `leg` column and the overlap bars trimmed, and says so above
+   the block. Trim to fit and disclose the trim; do not paste a record and let
+   Medium mangle it.
+
+## Regenerating the graphics
+
+```bash
+uv pip install --system matplotlib
+python3 docs/img/make_medium_graphics.py
+```
+
+Every number in those images is hard-coded in that script, sourced from
+`README.md`, `docs/RUNBOOK.md` and `docs/INTEROP.md`. **If a measurement changes
+there, change it in the script too** — an image is the one place in this repo
+where a stale number cannot be caught by grep.
+
+## What was checked
+
+- **Palette**: categorical slots 1–3 of the dataviz reference palette — blue
+  `#2a78d6`, orange `#eb6834`, aqua `#1baf7a` — validated on a `#ffffff` surface
+  with `--pairs all`: lightness band, chroma floor, CVD separation (worst pair
+  ΔE 9.2 deutan), normal-vision floor (worst ΔE 24.0), contrast. Aqua sits below
+  3:1 on white, so every chart direct-labels its values, which is the documented
+  relief for that WARN.
+- **Light surface, deliberately.** Medium serves one image to both its themes.
+  Text drawn on transparency is illegible in whichever theme it was not drawn
+  for, so these are light cards that stay readable on a dark page.
+- **Every image was rendered and looked at**, which is not the same as assuming
+  the code was right. Four defects only a render could show: column headers kept
+  their backticks; an inline `code` span inside a longer cell kept its backticks
+  too; the per-character width used for wrapping was too small, so cells overran
+  into the next column; and the first `07` was a dumbbell whose two dots landed
+  on top of each other wherever the two scorers agreed. The dumbbell is now
+  grouped bars, which cannot collide.
+
+## The two places the prose differs from the dev.to version
+
+Both are consequences of the format, not edits to the argument:
+
+- **The troubleshooting reference is a list, not an image.** It is eleven rows
+  of three prose columns. As a 1500px image the text lands around 11px on a
+  phone, which is where a reference table stops being usable. Bold symptom, then
+  cause and fix in prose, is legible at any width.
+- **One sentence reads "those two" instead of "that"**, because the single
+  results table became two images.

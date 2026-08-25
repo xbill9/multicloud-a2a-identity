@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""Render a Medium article as HTML -- to read privately, or to feed to Medium.
+
+Two modes, because they want opposite things from the images.
+
+**Default: a self-contained proof.** Every PNG inlined as a data URI, written
+outside the repo. Read it anywhere, share the link, check the layout before
+pasting anything. A generated HTML copy committed beside its markdown is a
+second document that drifts -- this repo has already paid for that once with
+the runbook -- so the generator is version-controlled and its output is not.
+
+**`--web`: a page Medium can import.** Images stay as relative `<img src>`
+paths, and the file lands in `docs/` so GitHub Pages serves it alongside
+`docs/img/medium/`. Medium's "Import a story" takes a public URL and pulls the
+text *and* the images, which is the only way to avoid placing every image by
+hand. Data URIs are no good for that -- importers fetch `src` URLs and skip
+inline data -- which is exactly why this mode exists.
+
+    python3 docs/make_preview.py                 # proof of all three, to the scratchpad
+    python3 docs/make_preview.py gde             # just one
+    python3 docs/make_preview.py --web           # importable pages into docs/
+"""
+
+import base64
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+from html import escape as html_escape
+
+import markdown
+
+import make_gists
+
+DOCS = Path(__file__).parent
+SLUGS = ("framework", "gde", "aws")
+
+#: Where the `--web` pages are served from. Image sources are written absolute
+#: against this: a fetcher that rebuilds the page elsewhere has nothing to
+#: resolve a relative path against.
+SITE = "https://xbill9.github.io/multicloud-a2a-subagent"
+SCRATCH = Path("/tmp/claude-1000/-home-xbill-multicloud-a2a-subagent") \
+    / "6ddb71c6-f02a-46a7-ae5e-9981bdd7eead/scratchpad"
+
+CSS = """
+:root {
+  color-scheme: light;
+  --paper:      #fbfbf9;
+  --card:       #ffffff;
+  --ink:        #14140f;
+  --ink-2:      #57564e;
+  --ink-3:      #8b8a80;
+  --rule:       #e2e1da;
+  --rule-soft:  #eeede7;
+  --accent:     #2a78d6;
+  --accent-2:   #eb6834;
+  --code-bg:    #f4f4f0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper:     #191917;
+    --card:      #ffffff;
+    --ink:       #f3f2ea;
+    --ink-2:     #b0aea3;
+    --ink-3:     #85847a;
+    --rule:      #34342f;
+    --rule-soft: #262622;
+    --accent:    #6ba6ee;
+    --accent-2:  #f0885c;
+    --code-bg:   #211f1d;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper:     #191917;
+  --card:      #ffffff;
+  --ink:       #f3f2ea;
+  --ink-2:     #b0aea3;
+  --ink-3:     #85847a;
+  --rule:      #34342f;
+  --rule-soft: #262622;
+  --accent:    #6ba6ee;
+  --accent-2:  #f0885c;
+  --code-bg:   #211f1d;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Source Serif 4", Charter, Georgia, serif;
+  font-size: 19px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.sheet { max-width: 1120px; margin: 0 auto; padding: 0 24px 96px; }
+
+/* ---- masthead: a proof slug, not a hero ---- */
+.slug {
+  display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: baseline;
+  padding: 22px 0 20px; border-bottom: 1px solid var(--rule);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.slug b { color: var(--accent-2); font-weight: 600; }
+.masthead { max-width: 40rem; margin: 0 auto; padding: 60px 0 10px; }
+.masthead h1 {
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-weight: 600; font-size: 2.6rem; line-height: 1.12;
+  letter-spacing: -0.02em; margin: 0 0 22px; text-wrap: balance;
+}
+/* The bottom margin is load-bearing in `--web` mode, where the standfirst is a
+   plain sibling of the body paragraphs and there is no masthead to space it. */
+.standfirst {
+  margin: 0 0 1.9rem; color: var(--ink-2); font-size: 1.22rem; line-height: 1.5;
+  font-style: italic;
+}
+
+/* ---- prose ---- */
+article { max-width: 40rem; margin: 0 auto; }
+article > * { margin-inline: auto; }
+article h1, article h2, article h3, article h4 {
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-weight: 600; letter-spacing: -0.015em; text-wrap: balance;
+}
+article h2 { font-size: 1.72rem; line-height: 1.2; margin: 3.4rem 0 1.1rem; }
+/* Medium has two heading sizes, so `####` lands on the small one. The AWS
+   piece uses `####` for its sections; sized between h2 and h3 so the preview
+   shows the same hierarchy Medium will. */
+article h4 { font-size: 1.42rem; line-height: 1.25; margin: 3.2rem 0 1rem; }
+article h3 { font-size: 1.18rem; margin: 2.6rem 0 .8rem; }
+article p { margin: 0 0 1.35rem; }
+article ul { margin: 0 0 1.35rem; padding-left: 1.2rem; }
+article li { margin-bottom: .6rem; }
+article strong { font-weight: 600; }
+article a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+article hr { border: 0; border-top: 1px solid var(--rule); margin: 3rem auto; }
+
+blockquote {
+  margin: 0 0 1.35rem; padding: .2rem 0 .2rem 1.3rem;
+  border-left: 3px solid var(--accent); color: var(--ink-2);
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: .82em; background: var(--code-bg); color: var(--ink);
+  padding: .12em .35em; border-radius: 3px;
+}
+pre {
+  background: var(--code-bg); border: 1px solid var(--rule-soft);
+  border-radius: 6px; padding: 16px 18px; overflow-x: auto;
+  margin: 0 0 1.6rem; line-height: 1.5;
+}
+pre code { background: none; padding: 0; font-size: 13px; }
+
+/* ---- figures: the nine images, in upload order ---- */
+figure {
+  margin: 2.6rem auto; width: min(880px, 100%);
+}
+figure img {
+  display: block; width: 100%; height: auto;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+figcaption {
+  display: flex; gap: 14px; align-items: flex-start;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule-soft);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-size: 12.5px; line-height: 1.5; color: var(--ink-3);
+}
+.stamp {
+  flex: none;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--accent-2); padding-top: 1px; white-space: nowrap;
+}
+.stamp em { font-style: normal; color: var(--ink-3); }
+.alt { margin: 0; }
+.alt b {
+  display: block; font-weight: 600; color: var(--ink-2); margin-bottom: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 700px) {
+  body { font-size: 17.5px; }
+  .masthead h1 { font-size: 2rem; }
+  figcaption { flex-direction: column; gap: 6px; }
+}
+"""
+
+
+#: How a code block reaches Medium: as an image, captioned with a link to the
+#: gist it was rendered from.
+#:
+#: Not as an embed, and not for want of trying. One page carrying the same gist
+#: in five markups was imported 2026-08-23 and inspected. A bare URL, an anchor,
+#: a figure wrapping an anchor and a figure carrying `data-oembed-url` all came
+#: through as plain links; an `<iframe>` to the gist `.pibb` endpoint was
+#: dropped outright. Zero iframes on the imported page. Medium's importer makes
+#: no embeds from any markup, so an embed is not a thing this pipeline can
+#: produce and pretending otherwise just moves the failure later.
+#:
+#: The image guarantees it renders. The gist in the caption guarantees it is
+#: still copyable. Neither on its own does both.
+#: **The caption must not contain a link.** Medium's importer drops the whole
+#: figure if its `<figcaption>` holds an `<a>`. That is what cost the code
+#: images: the table figures, whose captions are plain prose, imported every
+#: time, while every code figure -- identical but for a linked caption -- was
+#: dropped, in two articles, across four imports. A probe of four distinct code
+#: images with plain captions landed all four, which is the control.
+#: So the caption stays plain and the gist link goes in a paragraph after the
+#: figure, where a link imports fine.
+CODE_FIGURE = (
+    '<figure><img src="{img}" alt="{alt}">'
+    '<figcaption>{filename}</figcaption></figure>\n'
+    '<p><a href="{url}">Copy this block from the gist</a></p>'
+)
+
+
+def _code_alt(block: dict) -> str:
+    """Alt text for a code image: the code itself, which is its equivalent.
+
+    Capped, because a screen reader should not have to sit through a hundred
+    lines before the prose resumes -- and the caption links the gist, which is
+    where the full text lives anyway.
+    """
+    lines = block["code"].rstrip().split("\n")
+    flat = " / ".join(l.strip() for l in lines if l.strip())
+    if len(flat) > 480:
+        flat = flat[:480].rsplit(" / ", 1)[0] + " / ... full text in the linked gist"
+    return html_escape(f"{block['filename']}, {len(lines)} lines. {flat}")
+
+
+#: Alt text for a cover, stated in words like every other figure's -- a cover
+#: is the one image a screen reader meets before any prose has framed it.
+COVER_ALT = {
+    "framework": (
+        "One agent, three clouds, one protocol. Three columns sharing a single "
+        "A2A v1.0 line: Google runs an ADK LlmAgent on gemini-2.5-flash on Cloud "
+        "Run, AWS runs a Strands Agent on nova-micro on Bedrock AgentCore, and "
+        "Azure runs an Agent Framework Agent on gpt-5-mini on Container Apps. All "
+        "three share the same brief, the same instruction, the same search tool "
+        "and the same rubric"),
+}
+
+
+def gistify(text: str, slug: str) -> str:
+    """Swap each multi-line fenced block for its gist link.
+
+    Only in `--web`. The proof mode keeps the code inline, because a person
+    reading it wants the code on the page; the web page exists to be read by
+    Medium's importer, which cannot keep a newline inside a `<pre>`.
+    """
+    manifest = make_gists.load()
+    have = [b for b in make_gists.blocks(slug) if b["key"] in manifest]
+    missing = [b["key"] for b in make_gists.blocks(slug) if b["key"] not in manifest]
+    if missing:
+        raise SystemExit(
+            f"article-medium-{slug}.md: no gist for {', '.join(missing)}. "
+            f"Run `python3 docs/make_gists.py` first.")
+
+    it = iter(have)
+
+    def swap(match):
+        if not make_gists.needs_image(match.group(2)):
+            return match.group(0)          # imports intact as a code block
+        block = next(it)
+        entry = manifest[block["key"]]
+        return "\n" + CODE_FIGURE.format(
+            img=f"{SITE}/img/medium/code/{block['key']}.png",
+            alt=_code_alt(block),
+            filename=block["filename"],
+            url=entry["url"]) + "\n"
+
+    return make_gists.BLOCK_RE.sub(swap, text)
+
+
+def build(slug: str, out_path: Path, *, web: bool) -> Path:
+    """Render one article.
+
+    The two modes differ in more than the image sources, and the first `--web`
+    pass got this wrong: it emitted the same bare fragment the proof uses --
+    no doctype, no `<html>`, no `<body>` -- because an Artifact host supplies
+    that skeleton itself. Served raw from Pages there is nothing to supply it,
+    and Medium's importer refused the page. A page meant to be *read by a
+    machine* needs the whole document.
+    """
+    text = (DOCS / f"article-medium-{slug}.md").read_text()
+
+    if web:
+        text = gistify(text, slug)
+
+    title = re.search(r"^# (.+)$", text, re.M).group(1)
+    standfirst = re.search(r"^### (.+)$", text, re.M).group(1)
+    text = re.sub(r"^# .+$", "", text, count=1, flags=re.M)
+    text = re.sub(r"^### .+$", "", text, count=1, flags=re.M)
+
+    html = markdown.markdown(text, extensions=["fenced_code", "attr_list", "sane_lists"])
+
+    count = html.count("<img")
+    first_image = ""
+
+    def figure(match, _n=[0]):
+        nonlocal first_image
+        _n[0] += 1
+        alt, src = match.group("alt"), match.group("src")
+        if web:
+            source = f"{SITE}/{src}"
+            first_image = first_image or source
+            # Caption is the alt text alone. Medium turns a figcaption into the
+            # image's caption on import, which is exactly the text the
+            # publishing checklist would otherwise have someone paste by hand.
+            caption = f'<figcaption>{alt}</figcaption>'
+        else:
+            data = base64.b64encode((DOCS / src).read_bytes()).decode()
+            source = f"data:image/png;base64,{data}"
+            caption = (
+                f'<figcaption><span class="stamp">{_n[0]:02d}<em>/{count:02d}</em></span>'
+                f'<p class="alt"><b>{Path(src).name}</b>{alt}</p></figcaption>'
+            )
+        return f'<figure><img src="{source}" alt="{alt}">{caption}</figure>'
+
+    html = re.sub(r'<img alt="(?P<alt>[^"]*)" src="(?P<src>[^"]*)"\s*/?>', figure, html)
+
+    # A cover, if one has been drawn for this article. Medium takes the first
+    # image in the body as the story's cover, so it has to lead the body rather
+    # than only sit in og:image -- and being first also makes it the og:image
+    # by the rule above.
+    cover = DOCS / "img" / "medium" / f"00-cover-{slug}.png"
+    if web and cover.exists():
+        first_image = f"{SITE}/img/medium/{cover.name}"
+        html = (f'<figure><img src="{first_image}" alt="{COVER_ALT[slug]}">'
+                f'<figcaption>{COVER_ALT[slug]}</figcaption></figure>\n') + html
+    html = html.replace("<p><figure>", "<figure>").replace("</figure></p>", "</figure>")
+
+    head_extra = ""
+    body = ""
+    if web:
+        head_extra = (
+            f'\n<meta name="description" content="{standfirst}">'
+            f'\n<meta property="og:type" content="article">'
+            f'\n<meta property="og:title" content="{title}">'
+            f'\n<meta property="og:description" content="{standfirst}">'
+            + (f'\n<meta property="og:image" content="{first_image}">' if first_image else "")
+            + f'\n<link rel="canonical" href="{SITE}/medium-{slug}.html">'
+        )
+        body = (
+            f'<article class="sheet">\n  <h1>{title}</h1>\n'
+            f'  <p class="standfirst">{standfirst}</p>\n  {html}\n</article>'
+        )
+    else:
+        body = f"""<div class="sheet">
+  <div class="slug"><span>Medium proof</span><span>docs/article-medium-{slug}.md</span>
+  <span><b>{count} images</b> — tables rendered, captions ready to paste</span></div>
+  <header class="masthead">
+    <h1>{title}</h1>
+    <p class="standfirst">{standfirst}</p>
+  </header>
+  <article>{html}</article>
+</div>"""
+
+    fonts = ('<link rel="preconnect" href="https://fonts.googleapis.com">\n'
+             '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n'
+             '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
+             'family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&'
+             'family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400'
+             '&display=swap">')
+
+    if web:
+        page = (f'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+                f'<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+                f'<title>{title}</title>{head_extra}\n{fonts}\n<style>{CSS}\n'
+                f'article.sheet {{ max-width: 40rem; }}\n'
+                f'article.sheet > h1 {{ font-family: "IBM Plex Sans", system-ui, sans-serif;'
+                f' font-weight: 600; font-size: 2.4rem; line-height: 1.14;'
+                f' letter-spacing: -0.02em; margin: 48px 0 20px; }}\n'
+                f'</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n')
+    else:
+        page = f"<title>{title}</title>\n{fonts}\n<style>{CSS}</style>\n{body}\n"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(page)
+
+    if web:
+        publish_copy(slug, page)
+    return out_path
+
+
+#: Where the content-addressed copies live. Separate directory so the stable
+#: `docs/medium-<slug>.html` stays the canonical, linkable page.
+IMPORT_DIR = DOCS / "import"
+
+
+def publish_copy(slug: str, page: str) -> Path:
+    """Write the page again under a name derived from its own content.
+
+    **Medium's importer caches by URL and ignores the query string.** Measured
+    2026-08-23: after replacing every code block with a gist embed, pushing,
+    and confirming the new HTML live on Pages, importing `medium-aws.html`
+    returned the *previous* content -- flattened code, no gists. Importing
+    `medium-aws.html?v=gist1` returned the same stale copy. Both URLs served
+    the new content to curl at that moment.
+
+    That cache is why iterating on a Medium import feels impossible: you fix
+    the page, re-import, and grade the fix against a copy Medium fetched
+    before you made it. Twice here it read as "the fix did not work".
+
+    A content-addressed filename removes the failure mode rather than working
+    around it. Change any byte and the URL changes, so Medium has never seen
+    it and cannot have it cached; change nothing and the URL is stable, so
+    re-running this generator does not churn.
+    """
+    # Strip the canonical before hashing. Medium's importer *resolves* it: with
+    # `<link rel="canonical" href=".../medium-aws.html">` in the page, every
+    # content-addressed URL still imported the content cached against
+    # medium-aws.html, which is why two fixes in a row looked like no-ops. The
+    # embed probe imported fresh content the whole time -- it had no canonical.
+    # The stable page keeps its canonical; only this copy loses it, and Medium's
+    # own story settings are where a canonical belongs anyway.
+    page = re.sub(r'\n<link rel="canonical"[^>]*>', "", page)
+
+    digest = hashlib.sha256(page.encode()).hexdigest()[:10]
+    IMPORT_DIR.mkdir(exist_ok=True)
+    target = IMPORT_DIR / f"{slug}-{digest}.html"
+    target.write_text(page)
+    # One import file per article. The old ones are this generator's own
+    # output, never linked from a published story -- the canonical URL is
+    # docs/medium-<slug>.html -- so pruning them keeps the directory honest
+    # about which copy is current.
+    for stale in IMPORT_DIR.glob(f"{slug}-*.html"):
+        if stale != target:
+            stale.unlink()
+    print(f"    import URL: {SITE}/import/{target.name}")
+    return target
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    web = "--web" in args
+    slugs = [a for a in args if not a.startswith("-")] or list(SLUGS)
+    for slug in slugs:
+        out = (DOCS / f"medium-{slug}.html") if web else (SCRATCH / f"medium-proof-{slug}.html")
+        written = build(slug, out, web=web)
+        print(f"  {written}  ({written.stat().st_size / 1024:.0f} KB)")

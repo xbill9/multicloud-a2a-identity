@@ -603,6 +603,16 @@
 
   <p>A trust domain unifies the <em>format</em> of the identity. It does not reduce the number of places that decide what the identity may do, because that decision belongs to each far end and cannot be delegated to your Server. Three mappings before, three mappings and a registry after.</p>
 
+  <h3>And SPIFFE Federation is not the escape hatch</h3>
+
+  <p>The usual reply at this point is that SPIFFE has federation built in, so let the trust domains federate and the problem goes away.</p>
+
+  <p>It does not, because of what federation is. The <a href="https://spiffe.io/docs/latest/spiffe-specs/spiffe_federation/">SPIFFE Federation specification</a> defines an exchange of <em>trust bundles</em> between trust domains, each publishing an HTTPS bundle endpoint the other polls. No identities are delegated and no keys are shared — the domains simply learn to verify each other's SVIDs.</p>
+
+  <p>That requires the far side to be a SPIFFE trust domain publishing a SPIFFE bundle endpoint. AWS is not one. Neither is Azure, nor Google. There is nothing on the other end to federate with, so federation is available exactly when both parties already run SPIFFE — which is meaning A again.</p>
+
+  <p>The spec is also explicit that its scope stops at verifying identities issued elsewhere. It carries no authorization semantics across the boundary, which is the same limit the Clouds have and for the same reason.</p>
+
   <h3>It puts one endpoint you host in the path of all three legs</h3>
 
   <p>This is the one I would refuse on even if the others were solved.</p>
@@ -628,37 +638,102 @@
 
   <p>None of those describe a serverless Agent mesh calling managed runtimes on three vendors.</p>
 
-  <h2>So What Should Multicloud Agents Do?</h2>
+  <h2>This Ground Has Been Covered</h2>
 
-  <p>Four things, none of which needs a new identity system.</p>
+  <p>I went looking for prior work expecting thin pickings, on the assumption that Agent identity is too new to have a literature. That was wrong, and the reason it looked empty is that most of the work is filed under workload identity and microservices rather than under Agents.</p>
+
+  <p>Two IETF efforts are directly on this problem.</p>
+
+  <h3>WIMSE — workload identity in multi-system environments</h3>
+
+  <p>The <a href="https://datatracker.ietf.org/doc/charter-ietf-wimse/00-00/">WIMSE working group</a> is chartered for exactly this: least-privilege access control for workloads deployed across multiple platforms, public and private. Its output includes an <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-arch/">architecture draft</a>, a <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-identifier/">Workload Identifier</a>, <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-creds/">Workload Credentials</a>, and a <a href="https://www.ietf.org/ietf-ftp/internet-drafts/draft-ietf-wimse-wpt-00.txt">Workload Proof Token</a> that binds a workload's authentication to a specific HTTP request.</p>
+
+  <p>The one worth reading before adopting anything is <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-identity-practices/">Workload Identity Practices</a> (Schwenkschuster and Rosomakho, draft 06, August 2026), which surveys how workloads actually get credentials today. It does not treat SPIFFE as the only legitimate answer. It documents the Instance Metadata Endpoint as an established industry pattern in its own right:</p>
+
+  <div class="callout">
+    <p>"The biggest cloud providers have established the pattern of an 'Instance Metadata Endpoint'. Aside from allowing workloads to retrieve metadata about themselves, it also allows them to receive identity."</p>
+    <p>And for the cross-Cloud case: "the workload first needs to federate to the Secure Token Service (STS) of the respective cloud, which is effectively an Identity Provider."</p>
+  </div>
+
+  <p>That is a description of what this mesh does, in a standards-track document, listed alongside SPIFFE rather than as the thing SPIFFE replaces. It also carries a requirement worth checking your own implementation against: a credential for internal platform access <strong>should not</strong> be reused to federate to an external STS, because doing so conflates trust and audience boundaries. This mesh mints a separate token per destination — the service URL for the GCP leg, <code>sts.amazonaws.com</code> for AWS, <code>api://AzureADTokenExchange</code> for Entra — so it complies, but only because the audiences were chosen deliberately.</p>
+
+  <h3>Transaction Tokens — the call chain, as a separate concern</h3>
+
+  <p><a href="https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/08/">Transaction Tokens</a> (draft 08, March 2026, OAuth WG) exist to carry user identity, workload identity and authorization context along a call chain inside a trust domain. They are short-lived signed JWTs issued by a Transaction Token Service, which implements a profile of the OAuth 2.0 Token Exchange endpoint, and they are cryptographically protected so downstream workloads cannot alter the context or invent a call that no transaction started.</p>
+
+  <p>This is the microservices industry having already learned the lesson: passing the caller's access token down the chain does not work, and the fix is a separate token for the chain, not a better credential for the workload.</p>
+
+  <p>There is an agent-specific extension, <a href="https://datatracker.ietf.org/doc/draft-oauth-transaction-tokens-for-agents/">Transaction Tokens for Agents</a> (Ashay Raut, Amazon), which uses <code>sub</code> for the principal and <code>act</code> for the Agent acting, with <code>sub</code> set to the Agent itself when it is operating autonomously. Be honest about its standing: that draft has expired and been replaced by an individual submission. The work is under way, not settled.</p>
+
+  <h3>And there is a literature</h3>
+
+  <ul>
+    <li><a href="https://arxiv.org/abs/2605.05440">Authorization Propagation in Multi-Agent AI Systems</a> (Krti Tallam, May 2026) formalises the problem as a workflow-level property, names three sub-problems — transitive delegation, aggregation inference, temporal validity — and derives seven structural requirements. Its verdict on the state of the art is the useful part: recent work "demonstrates that the field is converging on the problem, but not yet on a complete architecture." It also reports that ordinary system behaviour, not only attacks, already produces these failures in a production platform.</li>
+    <li><a href="https://arxiv.org/abs/2509.25974">OpenID Connect for Agents (OIDC-A) 1.0</a> proposes an OIDC extension with agent identity, delegation-chain representation and attestation evidence compatible with IETF RATS and Entity Attestation Tokens. It is a proposal by an individual author, not an adopted OpenID specification, and should be read as one.</li>
+  </ul>
+
+  <p>The picture that emerges is not that nobody has thought about this. It is that the standards bodies have split the problem in two — a credential for the workload, and a separate token for the chain — while the Agent-identity articles keep proposing a single mechanism for both.</p>
+
+  <h2>What a Valid Alternative Looks Like</h2>
+
+  <p>The mistake running through the Agent-identity writing is trying to solve a call-chain problem with a workload-identity tool. Those are two axes, the standards bodies have already separated them, and an architecture that separates them is buildable today on every runtime in this mesh.</p>
+
+  <p>Four layers. Each one has a specification behind it, and none of them requires a node.</p>
 
   <div class="opt">
-    <h3>Keep native workload identity federation</h3>
-    <p>The platform mints an attested token and each Cloud federates it its own way. Nothing to install, nothing to operate, and the minter is somebody else's uptime problem. Choose it deliberately rather than ending up on it.</p>
-    <p class="verdict">Covers the credential</p>
+    <span class="verdict">Layer 1 — who is calling</span>
+    <h3>Platform workload identity, per destination</h3>
+    <p>Keep the metadata mint. It is attested by the only party positioned to attest anything on serverless, it costs nothing to run, and the WIMSE practices draft documents it as an established pattern rather than a shortcut.</p>
+    <p>The rule to enforce is audience separation: one token per destination, never a platform-internal credential reused against an external STS. That is what stops a token minted for one boundary being replayed at another, and it is the requirement most homegrown implementations miss.</p>
   </div>
 
   <div class="opt">
-    <h3>Carry delegation in the A2A message, not the credential</h3>
-    <p>If the credential cannot hold the chain, stop trying to put it there. A2A added an extension mechanism in v1.0.1, and one official extension is <strong>Secure Passport</strong> — a <code>CallerContext</code> attached as metadata beside the task, carrying a client identifier, state and a signature.</p>
-    <p>That is the right seam. The credential proves the calling service; the passport says who the work is for and who relayed it, and each Agent verifies it in turn. It works on every runtime because it never touches the credential path. Two caveats worth stating: the extension targets context sharing rather than a formal delegation model, so the semantics are yours to define, and the signature needs its own key story.</p>
-    <p class="verdict">Covers the chain</p>
+    <span class="verdict">Layer 2 — on whose behalf, and through whom</span>
+    <h3>A transaction token for the call chain</h3>
+    <p>This is the layer the mesh does not have and the one every article is really asking for. A Transaction Token Service sits at the edge, takes the incoming request plus whatever authenticated the requester, and issues a short-lived signed JWT carrying <code>sub</code> for the principal and <code>act</code> for the Agent acting. Each Agent in the chain presents it, and requests a new one to call the next hop, so the chain accumulates rather than being asserted.</p>
+    <p>Two properties make this the right shape. The token is immutable in transit, so a downstream Agent cannot widen the context it was handed or fabricate a transaction that never started. And it is <em>separate</em> from the credential, so it is unaffected by the fact that three Clouds each dictate their own credential format.</p>
+    <p>The Txn-Token Service is a service you run, which is a real cost — but note the difference from a SPIRE Server. It is not in the credential path. If it is down, you stop starting new work; you do not lose the ability to authenticate, and no Cloud is fetching keys from you to validate a login.</p>
   </div>
 
   <div class="opt">
-    <h3>Fill in the Agent Card</h3>
-    <p>A2A already carries <code>securitySchemes</code> in the same shape as OpenAPI 3, plus a <code>security</code> block that can map scopes to individual skills. Most deployments, this one included, declare far less than the spec allows. It mints nothing — it just means a client learns what an Agent requires by reading rather than by failing.</p>
-    <p class="verdict">Cheapest item here</p>
+    <span class="verdict">Layer 3 — carried by the protocol</span>
+    <h3>A2A message metadata, not the credential</h3>
+    <p>The transaction token travels in the A2A message. The extension mechanism added in v1.0.1 is the sanctioned place, and the <strong>Secure Passport</strong> extension already defines a <code>CallerContext</code> attached beside the task with a client identifier, state and a signature.</p>
+    <p>Use the extension as the envelope and a transaction token as the payload, and the two weaknesses cancel: Secure Passport supplies a standard carrier that every A2A implementation can be taught to read, and the transaction token supplies the delegation semantics and signing model that Secure Passport deliberately leaves open.</p>
+    <p>Declare it on the Agent Card too. A2A carries <code>securitySchemes</code> in OpenAPI 3 shape plus a <code>security</code> block that maps scopes to individual skills, so a client can learn what an Agent requires by reading rather than by failing. Most deployments, this one included, declare far less than the spec allows.</p>
   </div>
 
   <div class="opt">
-    <h3>Record who asked</h3>
-    <p>The run record needs a requester field. Until a run carries one, the audit trail names the coordinator as the actor for everything, which is the original complaint in every one of these identity articles and is fixable in an afternoon.</p>
-    <p>Then there is <code>RoleSessionName</code> on <code>AssumeRoleWithWebIdentity</code>: caller's choice, two to sixty-four characters, and it lands in CloudTrail. It is the only caller-supplied identity string in this mesh that reaches a Cloud provider's audit log, and it is currently a constant. A run correlator there makes a CloudTrail entry traceable to a specific run, for one extra STS call per run.</p>
-    <p class="verdict">Closes the actual gap</p>
+    <span class="verdict">Layer 4 — narrowing, per hop</span>
+    <h3>Attenuate the credential at the boundary that supports it</h3>
+    <p>Where a Cloud lets you narrow a credential below what the role permits, do it per call rather than per deployment. On the AWS leg an inline session policy on <code>AssumeRoleWithWebIdentity</code> intersects with the role and can never widen it, so the session can be scoped to the single action a given hop needs.</p>
+    <p>Measured on this mesh: narrow the session to card discovery and the invocation is refused; narrow it to invocation and the card fetch is refused first. Both refusals name the session policy as the layer that said no. This is the one rule of the three that a deployment can demonstrate rather than assert.</p>
   </div>
 
-  <p>Two I would not start with. Running your own OIDC issuer gets you the claims control, and makes you an identity provider — key custody, rotation and availability all become yours, and you inherit the public-endpoint failure mode without the attestation that justified it. And a single egress broker holding all three federations builds the target you least want: reviewing this project for these articles turned up its own coordinator open to the internet on a public invoker binding, with three sets of federated credentials behind it. A broker makes that surface the architecture rather than the accident.</p>
+  <h3>Why this beats bolting on SPIRE</h3>
+
+  <p>Layer 1 is free and already attested. Layer 2 is a service you run, but outside the credential path, so its failure mode is "no new work" rather than "no authentication anywhere". Layer 3 is protocol machinery that already exists. Layer 4 is a request parameter.</p>
+
+  <p>Against that, the SPIRE design puts a service you run and a public discovery endpoint <em>inside</em> the credential path for all three legs, to obtain claim control that layer 2 provides without touching credentials at all.</p>
+
+  <div class="callout">
+    <p><strong>The honest caveat: nobody has finished this.</strong> Transaction Tokens are at draft 08, the agent extension has expired and been replaced by an individual submission, OIDC-A is one author's proposal, and the paper that frames the problem best concludes the field is "converging on the problem, but not yet on a complete architecture."</p>
+    <p>So this is a direction with standards behind it rather than a product you can adopt. What makes it the right direction anyway is that it is decomposed correctly — and layers 1, 3 and 4 are all available now, whatever happens to layer 2.</p>
+  </div>
+
+  <h3>The two-afternoon version</h3>
+
+  <p>If none of that is happening this quarter, the useful subset is small.</p>
+
+  <p>Put a requester field on the run record. Until a run carries who asked for it, the audit trail names the coordinator as the actor for everything — the original complaint in every one of these articles, and fixable in an afternoon without a single new component.</p>
+
+  <p>Then use <code>RoleSessionName</code>. It is required on every <code>AssumeRoleWithWebIdentity</code> call, caller's choice, two to sixty-four characters, and it lands in the assumed-role ARN and in CloudTrail. It is the only caller-supplied identity string in this mesh that reaches a Cloud provider's audit log, and it is currently a constant. A run correlator there makes a CloudTrail entry traceable to a specific run, for one extra STS call per run.</p>
+
+  <h3>Two I would not start with</h3>
+
+  <p>Running your own OIDC issuer gets you claim control and makes you an identity provider — key custody, rotation and availability become yours, and you inherit the public-endpoint failure mode without the attestation that justified it.</p>
+
+  <p>And a single egress broker holding all three federations builds the target you least want. Reviewing this project for these articles turned up its own coordinator open to the internet on a public invoker binding, with three sets of federated credentials behind it. A broker makes that surface the architecture rather than the accident.</p>
 
   <h2>Summary</h2>
 
@@ -668,7 +743,9 @@
 
   <p>The reason it removes none of them is worth carrying away on its own. A Cloud identity has no meaning outside its Cloud. AWS checks Google's signature and then applies a rule you wrote about a number it has never seen before; authentication crosses the boundary and authorization never does. Every far end has to decide locally what a foreign identity may do, so the mapping exists once per boundary no matter who issues the token. Change the issuer and you have changed the signature, not the arithmetic.</p>
 
-  <p>What is actually missing is narrower than the articles suggest, and it is already available. The Clouds hand you an attested credential. A2A has a place to carry the delegation context the Cloud minters refuse to carry. Between those two, most of the ask is buildable today without installing anything.</p>
+  <p>What is actually missing is narrower than the articles suggest, and the standards bodies have already split it correctly. A credential identifies the workload, and the Clouds hand you an attested one for free. A separate token carries the call chain — who asked, and which Agent is acting — because that context cannot survive inside a credential three vendors each define differently. WIMSE is standardising the first half and OAuth Transaction Tokens the second, and A2A's extension mechanism is where the second one travels.</p>
+
+  <p>None of that is finished. Transaction Tokens are at draft 08, the Agent extension has expired into an individual submission, and the best paper on the problem concludes the field is converging on it but not yet on an architecture. What can be said is that the decomposition is right, three of the four layers are available today, and the one that is not does not sit in the credential path — which is exactly the property the SPIRE design gives up.</p>
 
   <footer class="colophon">
     <div>Measured 25 August 2026 · deployed mesh, single runs</div>

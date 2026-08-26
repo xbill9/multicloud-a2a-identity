@@ -1,4 +1,4 @@
-<title>Why SPIRE Doesn't Fit Multicloud Agents</title>
+<title>Cross-Cloud Agent Auth is an N² Problem</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
@@ -337,13 +337,13 @@
 
   <header class="masthead">
     <div class="eyebrow">Cross-Cloud A2A</div>
-    <h1>Why SPIRE Doesn't Fit Multicloud Agents</h1>
-    <p class="standfirst">A2A is not what limits a multi-Cloud Agent mesh. Auth is. The standard advice is to adopt SPIFFE and SPIRE, and on a deployed three-Cloud mesh that advice answers a different question than the one being asked.</p>
+    <h1>Cross-Cloud Agent Auth is an N² Problem</h1>
+    <p class="standfirst">A2A is not what limits a multi-Cloud Agent mesh. Auth is. Three Clouds means six directed edges and each one is a separate integration — but the asymmetry that causes it sits in a narrower place than the usual advice suggests, and one vendor has already fixed its half.</p>
     <dl class="facts">
       <div class="fact"><dt>Clouds in the mesh</dt><dd>3</dd></div>
       <div class="fact"><dt>Directed cross-Cloud edges</dt><dd>6</dd></div>
-      <div class="fact"><dt>Edges needing a secret</dt><dd>1</dd></div>
-      <div class="fact"><dt>Federations SPIRE removes</dt><dd>0</dd></div>
+      <div class="fact"><dt>Clouds that mint OIDC</dt><dd>3</dd></div>
+      <div class="fact"><dt>Clouds that accept foreign OIDC</dt><dd>1</dd></div>
     </dl>
   </header>
 
@@ -353,13 +353,70 @@
 
   <p>Auth is where it stops. Every cross-Cloud call needs a credential the far side will accept, and the far side is a different vendor with a different notion of what acceptable means. A2A leaves this alone on purpose: the client reads the scheme off the Agent Card and gets the credential <strong>out of band</strong>. Out of band is the entire integration.</p>
 
-  <p>Ask what to do about it and you get pointed at SPIFFE and SPIRE. <a href="https://dev.to/jitu028/your-ai-agent-has-no-identity-the-missing-security-layer-in-enterprise-agentic-ai-58b">Jitendra Gupta's article on Agent identity</a> is a well-argued version, and the recommendation is common enough now to be the default answer.</p>
+  <p>Ask what to do about it and you get pointed at SPIFFE and SPIRE. <a href="https://dev.to/jitu028/your-ai-agent-has-no-identity-the-missing-security-layer-in-enterprise-agentic-ai-58b">Jitendra Gupta's article on Agent identity</a> is a well-argued version, and it is common enough now to be the default answer.</p>
 
-  <p>It is the wrong answer for this problem, and the reason comes down to one word.</p>
+  <p>This article argues three things against that, from a mesh that is deployed and controlled rather than drawn. Cross-Cloud Agent auth is a quadratic integration problem, not an identity-format problem. The asymmetry that makes it quadratic is on the <em>accept</em> side, not the mint side. And the fix is a change to two products rather than an industry-wide adoption of anything.</p>
+
+  <h2>What This Mesh Measured</h2>
+
+  <p>Three research Agents on GCP, AWS and Azure, coordinated from Cloud Run. Every outbound leg starts at the same place — the metadata server issues a short-lived OIDC token with whatever audience you ask for — then diverges by Cloud:</p>
+
+  <div class="legs">
+    <div class="leg">
+      <span class="route">GCP → GCP</span>
+      <span class="how">Google ID token, audience pinned to the service URL</span>
+    </div>
+    <div class="leg">
+      <span class="route">GCP → AWS</span>
+      <span class="how">Token to STS AssumeRoleWithWebIdentity, then SigV4</span>
+    </div>
+    <div class="leg">
+      <span class="route">GCP → Azure</span>
+      <span class="how">Token to an Entra Federated Identity Credential</span>
+    </div>
+  </div>
+
+  <p>No stored secrets on any of them. The findings below are from that deployment, measured 25 August 2026.</p>
+
+  <h3>Eight controls, positive and negative</h3>
+
+  <p>Each leg is run as deployed, then run again with the credential removed to confirm it is refused. A leg that answers is worth nothing until the same leg denied without its credential. There is also a wrong-audience probe on the GCP leg, which separates <em>this identity is checked</em> from <em>some token is checked</em>. All eight hold on the current build.</p>
+
+  <h3>Permissions narrow across a federation boundary</h3>
+
+  <p>An inline session policy on <code>AssumeRoleWithWebIdentity</code> intersects with the role's own policy and can never widen it, so a session can be scoped below what the role permits, per call rather than per deployment.</p>
+
+  <div class="scroll">
+    <table>
+      <caption>AWS leg, session policy varied — deployed mesh</caption>
+      <thead>
+        <tr><th class="mono">Session policy allows</th><th>Card fetch</th><th>Invocation</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono">GetAgentCard only</td><td><span class="chip pass">Allowed</span></td><td><span class="chip refused">Refused</span></td></tr>
+        <tr><td class="mono">InvokeAgentRuntime only</td><td><span class="chip refused">Refused</span></td><td>not reached</td></tr>
+        <tr><td class="mono">unattenuated</td><td><span class="chip pass">Allowed</span></td><td><span class="chip pass">Allowed</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Neither action substitutes for the other in either direction, and both refusals name the session policy as the layer that refused, which distinguishes an attenuation refusal from a role refusal without guessing. The invoke-only run is what proves discovery genuinely succeeded in the card-only run rather than being skipped.</p>
+
+  <p>Of the three things the Agent-identity articles ask for, this is the one a deployment can demonstrate rather than assert.</p>
+
+  <h3>Two operational findings worth having</h3>
+
+  <p>Cloud Run returns <strong>401</strong> when there is no usable ID token — wrong audience, an OAuth access token, malformed — and <strong>403</strong> when the token is fine and the identity lacks <code>roles/run.invoker</code>. Reading 401 as a denial conflates a client bug with an authorization result.</p>
+
+  <p>And IAM revocation takes about two minutes to propagate. Anonymous requests kept succeeding for that long after a binding was removed, with the policy already reading correctly. A control run immediately after a revocation reports the hole still open and sends someone looking for a second cause that does not exist.</p>
+
+  <h3>What it cost to find out</h3>
+
+  <p>Reviewing this project for these articles turned up its own coordinator open to the internet on a public invoker binding, serving a container that holds federated credentials for three Clouds. The controls found it. They found it four days later, which is an argument for running them on a schedule rather than before a write-up.</p>
 
   <h2>Multicloud Means Two Different Things</h2>
 
-  <p>The word does double duty, and the two meanings have nothing in common except the adjective.</p>
+  <p>Before the mechanics, the word. It does double duty, and the two meanings have nothing in common except the adjective.</p>
 
   <div class="split">
     <div>
@@ -386,34 +443,11 @@
     </div>
   </div>
 
-  <p>SPIFFE was built for the first one. It gives identity to workloads <em>inside</em> a boundary you control and it is good at that. An Agent mesh is the second one, where the hard part is that the far end is not yours and never will be.</p>
+  <p>SPIFFE was built for the first. It gives identity to workloads inside a boundary you control and it is good at that. An Agent mesh is the second, where the hard part is that the far end is not yours and never will be.</p>
 
   <div class="callout counter">
     <p><strong>"SPIFFE is good for multicloud" is true of meaning A and gets repeated as though it were true of meaning B.</strong> The difficulty in meaning B is not that your workloads lack an identity. It is that three vendors each have their own rules about which identities they accept, and no identity format you adopt changes that.</p>
   </div>
-
-  <h2>What the Framework Runs</h2>
-
-  <p>The coordinator runs on Cloud Run and calls three Agents. Every leg starts at the same place — the metadata server issues a short-lived OIDC token with whatever audience you ask for — then diverges by Cloud:</p>
-
-  <div class="legs">
-    <div class="leg">
-      <span class="route">GCP → GCP</span>
-      <span class="how">Google ID token, audience pinned to the service URL</span>
-    </div>
-    <div class="leg">
-      <span class="route">GCP → AWS</span>
-      <span class="how">Token to STS AssumeRoleWithWebIdentity, then SigV4</span>
-    </div>
-    <div class="leg">
-      <span class="route">GCP → Azure</span>
-      <span class="how">Token to an Entra Federated Identity Credential</span>
-    </div>
-  </div>
-
-  <p>No stored secrets on any of them. Each leg has a positive control and a negative control — run it as deployed, then run it with the credential removed and confirm it is refused. Eight probes, all holding on the current build.</p>
-
-  <p>That is already what SPIFFE exists to provide. The metadata server issues a short-lived, audience-scoped JWT that the platform signs and the workload cannot forge or extract. A JWT-SVID in everything but the namespace, and the attestation behind it is stronger than anything you can install, because the attester <em>is</em> the runtime.</p>
 
   <h2>What a Cloud Identity Means Somewhere Else</h2>
 
@@ -425,12 +459,8 @@
 
   <div class="callout counter">
     <p><strong>Authentication crosses the boundary. Authorization never does.</strong> The number in that token means what your trust policy says it means and nothing else. Delete the condition and the same valid token authorizes nothing.</p>
-    <p>There is no such thing as a cross-Cloud identity. There is a locally defined mapping, at each far end, from a foreign signature to a local principal. Three far ends, three mappings.</p>
+    <p>There is no such thing as a cross-Cloud identity. There is a locally defined mapping, at each far end, from a foreign signature to a local principal. Three far ends, three mappings — and that count is a property of the boundaries, not of the issuer. Change who signs and you have changed the signature, not the arithmetic.</p>
   </div>
-
-  <p>So writing the identity down three times is not a symptom of doing federation without SPIFFE. It is what a trust boundary is. Each side decides for itself what a foreign identity may do, because nobody else can decide it for them.</p>
-
-  <p>SPIRE changes whose signature is on the token. AWS still has to be told that <code>spiffe://example.org/coordinator</code> may assume a role, Entra still needs the same thing in its own format, and both mappings still live on their side of the wall. One issuer, still three mappings.</p>
 
   <h3>And what it means on Cloud Run</h3>
 
@@ -438,118 +468,92 @@
 
   <p>That identity belongs to the <em>service account</em>, which is attached to the service. Not to a revision, not to an instance, not to a request. The token proves one thing: something running as this service account asked for it.</p>
 
-  <p>It does not distinguish one revision from the next, so a rollback or a bad image carries the identity you reviewed. It does not distinguish concurrent requests. And it does not distinguish callers at all — anything that gets code running in that container gets the full weight of it.</p>
+  <p>It does not distinguish one revision from the next, so a rollback or a bad image carries the identity you reviewed. It does not distinguish concurrent requests. And it does not distinguish callers at all — which is why an anonymous request, during the window described above, was served by a container holding three Clouds' credentials. The identity behaved correctly throughout. It was never designed to answer the question that mattered.</p>
 
-  <p>Reviewing this project for these articles turned up its coordinator open to the internet on a public invoker binding. While that was true, an anonymous request arrived and was served by a container holding federated credentials for three Clouds. The identity behaved correctly throughout. It was never designed to answer the question that mattered.</p>
-
-  <p>There is also no fixed node underneath any of it. A Cloud Run instance is created for a burst of traffic and destroyed, the service scales to zero between runs, and the next request may be served by something that did not exist a second earlier.</p>
+  <p>There is also no fixed node underneath it. A Cloud Run instance is created for a burst of traffic and destroyed, the service scales to zero between runs, and the next request may be served by something that did not exist a second earlier.</p>
 
   <div class="callout">
     <p><strong>The substrate pulls two ways at once.</strong> The identity is too coarse — one service account across every revision and request. The compute is too fluid — no durable node to attest. SPIRE needs a stable node it can vouch for and an agent living on it long enough to vouch for the workloads above. Serverless offers neither half.</p>
     <p>On a substrate with no fixed node, the platform is the only party that can attest anything. It is the only one that knows which image is running, in which revision, under which service account, at the instant the token is minted.</p>
   </div>
 
-  <h2>Three Clouds, Three Vocabularies</h2>
+  <h2>Six Edges</h2>
 
-  <p>If every Cloud defines its own Agent identity, the obvious question is how any of it works across Clouds at all. The answer is that it works one ordered pair at a time, and it is worth going through properly, because the shape of the problem is not what the vendor diagrams suggest.</p>
-
-  <p>Start with what each Cloud lets a workload <em>present</em> as proof of who it is.</p>
-
-  <div class="legs">
-    <div class="leg">
-      <span class="route">Google</span>
-      <span class="how">An OIDC JWT from the metadata server, with a caller-chosen audience</span>
-    </div>
-    <div class="leg">
-      <span class="route">AWS</span>
-      <span class="how">A SigV4-signed <code>GetCallerIdentity</code> request — not a token at all</span>
-    </div>
-    <div class="leg">
-      <span class="route">Azure</span>
-      <span class="how">An OIDC JWT from Entra, for a resource Entra recognises</span>
-    </div>
-  </div>
-
-  <p>Two of those are JWTs and one is a signed HTTP request. That difference is not cosmetic, and it decides which pairs can work.</p>
-
-  <p>Now what each Cloud <em>accepts</em>. Google's Workload Identity Federation is the most permissive: it takes a JWT from any OIDC issuer with a discovery document, and it also takes the AWS-shaped subject token, which it replays against AWS STS to learn who signed it. AWS takes JWTs from an OIDC issuer, natively for <code>accounts.google.com</code> and via an explicit IAM OIDC provider for anything else. Entra takes JWTs from an issuer publishing OIDC discovery, and nothing else.</p>
-
-  <h3>The six edges</h3>
-
-  <p>Three Clouds means six directed cross-Cloud edges, and each is decided independently by what the caller can present and what the callee will accept.</p>
+  <p>Three Clouds means six directed cross-Cloud edges, and each is settled independently by what the caller can present and what the callee will accept.</p>
 
   <div class="scroll">
     <table>
       <caption>Directed edges between the three Clouds</caption>
       <thead>
-        <tr><th>Edge</th><th>Mechanism</th><th>Keyless</th><th>Status here</th></tr>
+        <tr><th>Edge</th><th>Mechanism</th><th>Keyless</th><th>Evidence</th></tr>
       </thead>
       <tbody>
         <tr>
           <td class="mono">GCP → AWS</td>
           <td>Metadata JWT to STS AssumeRoleWithWebIdentity</td>
           <td><span class="chip pass">Yes</span></td>
-          <td>Deployed</td>
+          <td>Deployed and controlled</td>
         </tr>
         <tr>
           <td class="mono">GCP → Azure</td>
           <td>Metadata JWT to an Entra federated credential</td>
           <td><span class="chip pass">Yes</span></td>
-          <td>Deployed</td>
+          <td>Deployed and controlled</td>
         </tr>
         <tr>
           <td class="mono">AWS → GCP</td>
           <td>Signed GetCallerIdentity to Google STS, then impersonation</td>
           <td><span class="chip pass">Yes</span></td>
-          <td>Implemented</td>
+          <td>Code written, not deployed</td>
         </tr>
         <tr>
           <td class="mono">AWS → Azure</td>
-          <td>Client secret</td>
-          <td><span class="chip refused">No</span></td>
-          <td>Implemented</td>
+          <td>STS GetWebIdentityToken to an Entra federated credential</td>
+          <td><span class="chip pass">Yes</span></td>
+          <td>Vendor-documented, not built</td>
         </tr>
         <tr>
           <td class="mono">Azure → GCP</td>
-          <td>Entra JWT to Google workload identity federation</td>
+          <td>Entra JWT to a Google workload identity pool</td>
           <td><span class="chip pass">Yes</span></td>
-          <td>Not built</td>
+          <td>Vendor-documented, not built</td>
         </tr>
         <tr>
           <td class="mono">Azure → AWS</td>
           <td>Entra JWT to an IAM OIDC provider for the Entra issuer</td>
           <td><span class="chip pass">Yes</span></td>
-          <td>Not built</td>
+          <td>Follows from both vendors' docs</td>
         </tr>
       </tbody>
     </table>
   </div>
 
-  <p>Six edges, five mechanisms, no two configured the same way. The first four are in this repository. The last two follow from the same rules and have not been deployed here.</p>
+  <p>Read the evidence column as three distinct claims. <strong>Deployed and controlled</strong> means it ran against the live Cloud and has a negative control behind it. <strong>Code written</strong> means the implementation exists in this repository and has not been run against the provider. <strong>Vendor-documented</strong> means the provider documents the mechanism and this project has not built it — for Azure to GCP, Google documents the issuer as <code>https://sts.windows.net/TENANT_ID</code> with the Entra application ID URI as the allowed audience. The last row combines two vendors' documented capabilities and is the weakest cell in the table.</p>
 
-  <h3>The edge that does not close</h3>
+  <p>Six edges, five mechanisms, no two configured the same way. That is the quadratic problem in one table, and it is worth being precise about why it is quadratic: each cell is the intersection of one Cloud's mint format and another Cloud's accept rules, and neither is standardised.</p>
 
-  <p>AWS to Azure is the one that pays for the whole argument.</p>
+  <h3>The edge that closed while this was being written</h3>
 
-  <p>Google's federation accepts the AWS-shaped subject token, so AWS to GCP is keyless without AWS ever minting a JWT. Entra has no equivalent. Its federated credential wants a JWT assertion from an issuer with OIDC discovery, and an ECS task role, a Lambda execution role or an AgentCore runtime role is not one. Outside EKS with IRSA, or Cognito, AWS has nothing of that shape to present.</p>
+  <p>Until recently, AWS to Azure was the cell that could not be done keyless, and this repository's code says so in a comment. Entra's federated credential wants a JWT assertion from an issuer with OIDC discovery, and an ECS task role, a Lambda execution role or an AgentCore runtime role was not one. Outside EKS with IRSA, or Cognito, AWS had nothing of that shape to present, so the leg fell back to a stored client secret.</p>
 
-  <div class="callout counter">
-    <p><strong>So that leg falls back to a stored client secret, and the mesh stops being secretless on exactly one of six edges.</strong> Not because anyone implemented it lazily — because the caller's native assertion is a signed request and the callee only reads JWTs from discoverable issuers. The two ends have no overlapping vocabulary.</p>
+  <p>That changed in November 2025. <a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_outbound.html">AWS IAM outbound identity federation</a> gives an account its own OIDC issuer URL, publishing <code>/.well-known/openid-configuration</code> and <code>/.well-known/jwks.json</code>, and workloads obtain a signed JWT by calling <a href="https://docs.aws.amazon.com/STS/latest/APIReference/API_GetWebIdentityToken.html">GetWebIdentityToken</a> with the audience they want. AWS names the multi-Cloud case explicitly as a use case, and IAM policy controls which workloads may request tokens and with which audiences and lifetimes.</p>
+
+  <div class="callout">
+    <p><strong>So the mint side has converged and the repository's comment is now dated.</strong> All three Clouds can issue an OIDC JWT with a caller-chosen audience to a workload holding no secret. That is worth stating plainly because it removes what looked like a structural asymmetry between the vendors.</p>
   </div>
 
-  <p>This is what "different standards" means in practice. Not competing formats for the same idea, which you could convert between. Two ends that disagree about what an assertion <em>is</em>.</p>
+  <p>It also removes a claim these articles lean on. AWS's outbound tokens can carry tags that <em>appear as custom claims</em>, which is how <a href="https://aws.amazon.com/blogs/security/propagate-user-authorization-context-in-ai-agents-with-amazon-bedrock-agentcore/">AWS's own guidance</a> propagates user context — a <code>https://aws.amazon.com/tags</code> claim in the token becomes a session tag, and IAM policy conditions read it back. Claim control is therefore a property of the specific minter, not of Cloud metadata services in general. Google's metadata identity endpoint takes three query parameters and emits a fixed claim set:</p>
 
-  <h3>The arithmetic gets worse before it gets better</h3>
+<pre><code>GET /computeMetadata/v1/instance/service-accounts/default/identity
+      ?audience=&lt;your audience&gt;
+      &amp;format=full
+      &amp;licenses=FALSE</code></pre>
 
-  <p>Three Clouds is six edges. Four is twelve. Each Cloud you add brings two edges for every Cloud already present, so the integration count grows as N², and every cell is somebody's bilateral decision to support somebody else.</p>
+  <p>Issuer, issued-at, expiry, audience, subject, authorized party, email, verified flag, and a Compute Engine block under <code>format=full</code>. No parameter adds a claim. A GCP-rooted caller cannot put a delegation chain in its token. An AWS-rooted one now can.</p>
 
-  <p>That is why the vendor Agent identity products cannot be the general answer, however good each one is. AWS supporting Entra as an inbound provider fills one cell. Microsoft surfacing Bedrock and Vertex Agents in its registry fills a few more. Nobody is going to fill a quadratic matrix by negotiation, and the cells that stay empty are the ones where two vendors have no commercial reason to care about each other's workloads.</p>
+  <h2>The Accept Side is Where the Problem Lives</h2>
 
-  <h3>What would actually make it work</h3>
-
-  <p>The fix is not a new identity format, and it is not a neutral issuer everyone adopts. It is narrower than either, and two of these three Clouds are close to it already.</p>
-
-  <p>Look again at where the asymmetry sits. Every Cloud can already mint something. The problem is on the <em>accept</em> side — whether an ingress will take a token from an issuer it does not own.</p>
+  <p>If all three Clouds can mint an OIDC JWT, the quadratic count has to be coming from somewhere else. It is coming from the ingress — whether a runtime will validate a token from an issuer it does not own.</p>
 
   <div class="scroll">
     <table>
@@ -560,7 +564,7 @@
       <tbody>
         <tr>
           <td class="mono">Bedrock AgentCore</td>
-          <td>SigV4, or a custom JWT authorizer with a discovery URL and allowed audiences</td>
+          <td>SigV4, or a custom JWT authorizer taking any OIDC discovery URL plus allowed audiences and clients</td>
           <td><span class="chip pass">Yes</span></td>
         </tr>
         <tr>
@@ -577,24 +581,25 @@
     </table>
   </div>
 
-  <p>AgentCore already does the thing that would fix this. Give it a discovery URL and a list of accepted audiences and it will validate a token from an issuer AWS has never heard of. That is the whole requirement, it is ordinary OIDC, and it needs no new specification.</p>
+  <p>AgentCore's <a href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/inbound-jwt-authorizer.html">inbound JWT authorizer</a> takes a discovery URL matching <code>^.+/\.well-known/openid-configuration$</code>, a list of allowed audiences validated against <code>aud</code>, and a list of allowed clients validated against <code>client_id</code>. Any OIDC-compliant issuer. That is ordinary OIDC and it needs no new specification.</p>
+
+  <p>One scoping note on that, because it is easy to over-read. AWS's integration guide for Microsoft Entra states that it supports Entra v1.0 and v2.0 access and ID tokens "that do not have any custom claims." That constraint is documented on the Entra-specific page; the general authorizer documentation describes discovery URL, audiences and clients without a corresponding restriction. Treat the no-custom-claims line as applying to the Entra integration as documented, and test before relying on custom claims through any issuer.</p>
 
   <div class="callout">
-    <p><strong>If every Cloud's ingress accepted an OIDC discovery URL, an audience and a subject condition, the matrix would collapse from N² to N.</strong> Each Cloud publishes one issuer for its workloads. Each Cloud accepts any issuer, subject to conditions you write. Six edges become three mints and three accept-configurations, and adding a fourth Cloud costs one of each rather than six new integrations.</p>
+    <p><strong>If every Cloud's ingress accepted an OIDC discovery URL, an audience and a subject condition, the matrix would collapse from N² to N.</strong> Each Cloud publishes one issuer for its workloads — all three now do. Each Cloud accepts any issuer, subject to conditions you write — one of three does. Six edges become three mints and three accept-configurations, and a fourth Cloud costs one of each instead of six new integrations.</p>
   </div>
 
-  <p>That is a change to three products, not a change to the industry. It also explains why the SPIRE proposal feels like it should work and does not pay off here: SPIRE is one issuer everyone trusts, which is the same collapse achieved by adding a party rather than by removing a restriction. The restriction is the cheaper thing to remove, and one vendor has already removed it.</p>
-
+  <p>That is a change to two products, not a change to the industry. And it explains why the SPIRE proposal feels like it should work: one issuer everyone trusts achieves the same collapse, but buys it by adding a party rather than by removing a restriction. The restriction is the cheaper thing to remove, and AWS has already removed it on both sides — it issues OIDC to its workloads and accepts OIDC from anyone.</p>
 
   <h2>There is More Prior Art Than It Looks Like</h2>
 
-  <p>Search for Agent identity and you get opinion pieces. The engineering is there, but it is filed in three separate places, and none of them uses the words you would search for.</p>
+  <p>Search for Agent identity and you get opinion pieces. The engineering is there, filed in three places that do not cite each other.</p>
 
   <h3>Tier one — the protocol work, which split the problem in two</h3>
 
-  <p>The <a href="https://datatracker.ietf.org/doc/charter-ietf-wimse/00-00/">IETF WIMSE working group</a> is chartered for least-privilege access control for workloads across multiple platforms, public and private. It has an <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-arch/">architecture draft</a>, a <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-identifier/">Workload Identifier</a>, <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-creds/">Workload Credentials</a>, and a <a href="https://www.ietf.org/ietf-ftp/internet-drafts/draft-ietf-wimse-wpt-00.txt">Workload Proof Token</a> binding a workload's authentication to a specific HTTP request.</p>
+  <p>The <a href="https://datatracker.ietf.org/doc/charter-ietf-wimse/00-00/">IETF WIMSE working group</a> is chartered for least-privilege access control for workloads across multiple platforms. It has an <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-arch/">architecture draft</a>, a <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-identifier/">Workload Identifier</a>, <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-creds/">Workload Credentials</a>, and a <a href="https://www.ietf.org/ietf-ftp/internet-drafts/draft-ietf-wimse-wpt-00.txt">Workload Proof Token</a> binding a workload's authentication to a specific HTTP request.</p>
 
-  <p>Read <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-identity-practices/">Workload Identity Practices</a> before adopting anything — Schwenkschuster and Rosomakho, draft 06, August 2026. It surveys how workloads get credentials today, and it does not treat SPIFFE as the only legitimate answer:</p>
+  <p><a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-identity-practices/">Workload Identity Practices</a> — Schwenkschuster and Rosomakho, draft 06, August 2026 — surveys how workloads get credentials today and does not treat SPIFFE as the only legitimate answer:</p>
 
   <div class="callout">
     <p>"The biggest cloud providers have established the pattern of an 'Instance Metadata Endpoint'. Aside from allowing workloads to retrieve metadata about themselves, it also allows them to receive identity."</p>
@@ -603,115 +608,43 @@
 
   <p>That describes this mesh, in a standards-track document, listed beside SPIFFE rather than as the thing SPIFFE replaces. The draft also carries a requirement worth auditing against: a credential for internal platform access should not be reused to federate to an external STS, because that conflates trust and audience boundaries. This mesh mints a separate token per destination — the service URL for GCP, <code>sts.amazonaws.com</code> for AWS, <code>api://AzureADTokenExchange</code> for Entra — so it passes, because the audiences were picked deliberately.</p>
 
-  <p><a href="https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/08/">Transaction Tokens</a>, draft 08, March 2026, OAuth working group, cover the other half. Short-lived signed JWTs carrying user identity, workload identity and authorization context along a call chain, issued by a Transaction Token Service implementing a profile of the OAuth 2.0 Token Exchange endpoint, and cryptographically protected so downstream workloads cannot alter what they were handed or invent a call no transaction started.</p>
+  <p><a href="https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/08/">Transaction Tokens</a>, draft 08, March 2026, OAuth working group, cover the other half: short-lived signed JWTs carrying user identity, workload identity and authorization context along a call chain, issued by a service implementing a profile of the OAuth 2.0 Token Exchange endpoint, and cryptographically protected so downstream workloads cannot alter what they were handed or invent a call no transaction started. There is an Agent extension, <a href="https://datatracker.ietf.org/doc/draft-oauth-transaction-tokens-for-agents/">Transaction Tokens for Agents</a> by Ashay Raut at Amazon, using <code>sub</code> for the principal and <code>act</code> for the Agent acting; draft 06 expired in April 2026 and was replaced by an individual submission.</p>
 
-  <p>This is the microservices industry having already learned the lesson. Passing the caller's access token down the chain does not work. The fix was a separate token for the chain, not a better credential for the workload. There is an Agent extension, <a href="https://datatracker.ietf.org/doc/draft-oauth-transaction-tokens-for-agents/">Transaction Tokens for Agents</a> by Ashay Raut at Amazon, using <code>sub</code> for the principal and <code>act</code> for the Agent acting; draft 06 expired in April 2026 and was replaced by an individual submission.</p>
+  <p>This is the microservices industry having already learned the lesson. Passing the caller's access token down the chain does not work. The fix was a separate token for the chain, not a better credential for the workload.</p>
 
-  <p>Alongside those: <a href="https://spiffe.io/docs/latest/spiffe-specs/spiffe_federation/">SPIFFE Federation</a>, A2A's own extension mechanism, and on the research side <a href="https://arxiv.org/abs/2605.05440">Authorization Propagation in Multi-Agent AI Systems</a> (Krti Tallam, May 2026), which formalises the problem, names transitive delegation, aggregation inference and temporal validity as sub-problems, derives seven structural requirements, and concludes the field is "converging on the problem, but not yet on a complete architecture." <a href="https://arxiv.org/abs/2509.25974">OIDC-A</a> proposes an OIDC extension with delegation chains and attestation evidence, as an individual proposal rather than an adopted specification.</p>
+  <p>Alongside those: <a href="https://spiffe.io/docs/latest/spiffe-specs/spiffe_federation/">SPIFFE Federation</a>, A2A's extension mechanism, and on the research side <a href="https://arxiv.org/abs/2605.05440">Authorization Propagation in Multi-Agent AI Systems</a> (Krti Tallam, May 2026), which names transitive delegation, aggregation inference and temporal validity as sub-problems, derives seven structural requirements, and concludes the field is "converging on the problem, but not yet on a complete architecture." <a href="https://arxiv.org/abs/2509.25974">OIDC-A</a> proposes an OIDC extension with delegation chains and attestation evidence, as an individual proposal rather than an adopted specification.</p>
 
   <h3>Tier two — the governance frameworks, which say what and not how</h3>
 
-  <p>A large body of work exists here and it is easy to miss because it is written for security programmes rather than for engineers.</p>
-
   <ul>
     <li>The Cloud Security Alliance has <a href="https://cloudsecurityalliance.org/artifacts/agentic-ai-identity-and-access-management-a-new-approach">Agentic AI Identity and Access Management: A New Approach</a>, an <a href="https://labs.cloudsecurityalliance.org/agentic/agentic-identity-governance-framework-v1/">Agent Identity Governance Framework</a>, and a whitepaper on the non-human identity governance vacuum.</li>
-    <li>The <strong>OWASP Top 10 for Agentic Applications 2026</strong> treats Agents as operational actors with delegated authority, and two of its categories are Identity and Privilege Abuse and Insecure Inter-Agent Communication.</li>
-    <li><strong>NIST</strong> issued a Request for Information on AI Agent Security in early 2026 and a concept paper on AI Agent Identity and Authorization. It points toward decentralised identifiers and verifiable credentials without mandating a technology.</li>
+    <li>The <strong>OWASP Top 10 for Agentic Applications 2026</strong> treats Agents as operational actors with delegated authority; two of its categories are Identity and Privilege Abuse, and Insecure Inter-Agent Communication.</li>
+    <li><strong>NIST</strong> issued a Request for Information on AI Agent Security in early 2026 and a concept paper on AI Agent Identity and Authorization, pointing toward decentralised identifiers and verifiable credentials without mandating a technology.</li>
   </ul>
 
-  <p>These are useful for deciding what to require. None of them tells you which token to put in which header, which is the question you have when the far side is a different vendor.</p>
+  <p>Useful for deciding what to require. None of them tells you which token goes in which header, which is the question you have when the far side is a different vendor.</p>
 
-  <h3>Tier three — the products, and this is where cross-Cloud actually shows up</h3>
+  <h3>Tier three — the products, where cross-Cloud actually shows up</h3>
 
-  <p>All three Clouds shipped Agent identity in 2026, which is the part I had not accounted for.</p>
+  <p>All three Clouds shipped Agent identity in 2026: Bedrock AgentCore Identity, generally available, built on Cognito, with an inbound authorizer and an outbound token vault; Microsoft Entra Agent ID, in preview, treating Agents as first-class directory objects under Conditional Access; and agent identities in Vertex AI Agent Engine.</p>
 
-  <div class="scroll">
-    <table>
-      <caption>Vendor Agent identity, 2026</caption>
-      <thead>
-        <tr><th>Product</th><th>Status</th><th>Shape</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Bedrock AgentCore Identity</td>
-          <td>GA</td>
-          <td>Built on Cognito. Inbound authorizer plus an outbound token vault for downstream tools.</td>
-        </tr>
-        <tr>
-          <td>Microsoft Entra Agent ID</td>
-          <td>Preview</td>
-          <td>Agents as first-class directory objects, under Conditional Access and the same lifecycle controls as users.</td>
-        </tr>
-        <tr>
-          <td>Vertex AI Agent Engine identities</td>
-          <td>Shipped</td>
-          <td>Agent identities inside Google's agent runtime.</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p>And they do address cross-Cloud — bilaterally. Microsoft documents securing a Bedrock Agent with Entra Agent ID and surfacing Agents from Bedrock, Vertex and Databricks in one registry. AWS documents Entra as an inbound identity provider for AgentCore Runtime and Gateway, configured with a discovery URL and a list of accepted <code>aud</code> claims.</p>
+  <p>They address cross-Cloud bilaterally. Microsoft documents securing a Bedrock Agent with Entra Agent ID and surfacing Agents from Bedrock, Vertex and Databricks in one registry. AWS documents Entra as an inbound identity provider for AgentCore Runtime and Gateway.</p>
 
   <div class="callout counter">
-    <p><strong>Every one of those is a vendor integration, not a federation.</strong> Each Cloud keeps its own registry and its own mapping, and cross-Cloud works because one vendor decided to support another. There is no interoperable registry and no neutral protocol — which is the same structure as the trust policies underneath, one layer up.</p>
+    <p><strong>Every one of those is a vendor integration, not a federation.</strong> Each Cloud keeps its own registry and its own mapping, and cross-Cloud works because one vendor decided to support another. Nobody fills a quadratic matrix by negotiation, and the cells that stay empty are the ones where two vendors have no commercial reason to care about each other's workloads.</p>
   </div>
 
-  <p>Two details from the AgentCore documentation are worth reading closely, because they cut against the discourse these products are sold into.</p>
+  <p>One detail from the AgentCore documentation is worth noting against the discourse these products are sold into: the outbound Microsoft credential provider is configured with a stored <code>clientSecret</code>. The Agent identity product, for its cross-Cloud leg, takes a long-lived secret. This mesh does that leg with a federated credential and none.</p>
 
-  <p>Its Entra inbound path supports "v1.0 and v2.0 Access and ID tokens <strong>that do not have any custom claims</strong>." The one leg in this mesh that lets you bring your own issuer documents that path as not carrying the extra claims a delegation chain would need.</p>
+  <h2>Where SPIRE Fits</h2>
 
-  <p>And the outbound Microsoft credential provider is configured like this:</p>
+  <p>Put SPIRE against the split the standards made and it is a credential system — a good one, for meaning A. It says nothing about a call chain, and the delegation problem these articles open with sits entirely in the second half.</p>
 
-<pre><code>{
-  "name": "NAME",
-  "credentialProviderVendor": "MicrosoftOAuth2",
-  "oauth2ProviderConfigInput": {
-    "microsoftOauth2ProviderConfig": {
-      "clientId": "your-client-id",
-      "clientSecret": "your-client-secret",
-      "tenantId": "your-microsoft-entra-tenant"
-    }
-  }
-}</code></pre>
+  <p>On the credential half, three things follow from the six-edge table.</p>
 
-  <p>A stored client secret, in the Agent identity product, for the cross-Cloud leg. This mesh does that leg with a federated credential and no secret at all.</p>
+  <p><strong>It removes none of the federation work.</strong> Every Agent here consumes external OIDC and carries on doing so. AWS still needs a trust policy, Entra still needs a federated credential, Cloud Run still needs an invoker binding. SPIRE changes which issuer those three trust; it does not reduce their number, and configuring them is the work. Count the places afterwards and it is four, not one: an IAM OIDC provider and trust policy, an Entra federated credential, a Google workload identity pool or invoker binding, and SPIRE registration entries as a registry that did not exist before.</p>
 
-  <h3>What the three tiers add up to</h3>
-
-  <p>Plenty has been written. The protocol work splits credential from call chain and is mostly at draft. The governance work says what to require and not how. The products are real and shipping, and each one is a single Cloud's registry with bilateral integrations bolted on.</p>
-
-  <p>The gap is specific: there is no neutral cross-Cloud Agent identity, and the direction of travel is three vendor planes rather than one standard. Which puts the architecture question back where it started — what do you build on top of three trust domains you do not control.</p>
-
-
-  <h2>SPIRE Answers the First Half</h2>
-
-  <p>Put SPIRE against that split and it is a credential system. A good one, for meaning A. It says nothing about a call chain, and the delegation problem these articles open with sits entirely in the second half.</p>
-
-  <p>Which leaves the practical objections, and there are three.</p>
-
-  <h3>It removes none of the federation work</h3>
-
-  <div class="scroll">
-    <table>
-      <caption>Adopting SPIRE on this framework</caption>
-      <thead>
-        <tr><th>Item</th><th>Today</th><th>With SPIRE</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>Token minter</td><td>Managed metadata server</td><td>SPIRE Server you run</td></tr>
-        <tr><td>Attestation on serverless</td><td>Built into the runtime</td><td><span class="chip refused">Open RFC</span></td></tr>
-        <tr><td>Public endpoints to operate</td><td>None</td><td>OIDC discovery, on your DNS</td></tr>
-        <tr><td>Federations still required</td><td>3</td><td><span class="chip refused">3</span></td></tr>
-        <tr><td>Places identity is pinned</td><td>3</td><td><span class="chip pass">1</span></td></tr>
-        <tr><td>Control over token claims</td><td>None</td><td><span class="chip pass">Yours</span></td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p>Every Agent in this mesh consumes external OIDC and carries on doing so. AWS still needs a trust policy, Entra still needs a federated credential, Cloud Run still needs an invoker binding. SPIRE changes which issuer those three trust. It does not reduce their number, and configuring them is the work.</p>
-
-  <p>It also changes the shape of that configuration. Google is a native AWS identity provider, so you must not create an IAM OIDC provider for it — doing so breaks federation:</p>
+  <p><strong>It changes the shape of the configuration.</strong> Google is a native AWS identity provider, so you must not create an IAM OIDC provider for it — doing so breaks federation:</p>
 
 <pre><code>"Principal": { "Federated": "accounts.google.com" },
 "Condition": { "StringEquals": {
@@ -730,41 +663,15 @@
 
   <p>Opposite rules for two tasks that look identical on a diagram.</p>
 
-  <h3>There is nowhere to put the Agent, and the project knows</h3>
-
-  <p>There is an RFC for serverless support, <a href="https://github.com/spiffe/spire/issues/1843">spiffe/spire#1843</a>, proposing an agentless path where the function attests directly to the Server. Opened September 2020. Still a proposal.</p>
-
-  <p>What it proposes to attest <em>with</em> is the part to read:</p>
-
-  <ul>
-    <li>For Google Cloud Functions, validate the identity token from the Compute Metadata Server.</li>
-    <li>For AWS Lambda, sign a <code>GetCallerIdentity</code> query with SigV4 and let the Server replay it.</li>
-  </ul>
-
-  <p>Those are the two primitives this framework already calls directly. The coordinator mints the metadata token itself, and running the coordinator on AWS instead already signs a <code>GetCallerIdentity</code> request and hands it to Google's STS. On serverless, SPIRE's own design is a wrapper around what the mesh does today.</p>
-
-  <h3>The one argument that does land</h3>
-
-  <p>AWS has the field these articles keep asking for. <code>SourceIdentity</code> is set once, cannot be changed, survives role chaining, and appears on every action taken with the role. Session tags do the same for attributes.</p>
-
-  <p>Both are filled from claims inside the web identity token, not from a request parameter. The caller cannot set them. The identity provider has to, and the GCE metadata identity endpoint takes three query parameters, which is the whole surface:</p>
-
-<pre><code>GET /computeMetadata/v1/instance/service-accounts/default/identity
-      ?audience=&lt;your audience&gt;
-      &amp;format=full
-      &amp;licenses=FALSE</code></pre>
-
-  <p>The claim set is fixed: issuer, issued-at, expiry, audience, subject, authorized party, email, verified flag, and a Compute Engine block under <code>format=full</code>. No parameter adds one. Two of the three Clouds would accept a delegation chain and none of the three legs can send one, because they all start at a minter with no way to say anything beyond an audience.</p>
-
-  <p>Run the Server yourself and the claim set is yours. That is a real gain and it does not shrink as the mesh gets smaller. It is also not what "adopt SPIFFE for workload identity" is selling, because you already have workload identity. The gap is claims, and claims have cheaper answers than a CA.</p>
+  <p><strong>And there is nowhere to put the Agent.</strong> There is an RFC for serverless support, <a href="https://github.com/spiffe/spire/issues/1843">spiffe/spire#1843</a>, proposing an agentless path where the function attests directly to the Server. Opened September 2020, still a proposal. What it proposes to attest <em>with</em> is the part to read: for Google Cloud Functions, the identity token from the Compute Metadata Server; for AWS Lambda, a SigV4-signed <code>GetCallerIdentity</code> query the Server replays. Those are the two primitives this framework already calls directly. On serverless, SPIRE's own design is a wrapper around what the mesh does today.</p>
 
   <h2>But You Could Make It Work</h2>
 
   <p>You could, and the design deserves writing out, because it is the obvious response to everything above.</p>
 
-  <p>Nobody says the SPIRE Agent has to run on the serverless runtime. Only the caller needs an identity and there is one caller. So run the Server on a VM or a small GKE cluster. Have the coordinator present its Cloud Run metadata token to the Server and get back a JWT-SVID carrying whatever claims you want. Publish the JWKS through the OIDC Discovery Provider, point the AWS and Entra trust policies at it, and you have one SPIFFE ID and full control of the claim set.</p>
+  <p>Nobody says the SPIRE Agent has to run on the serverless runtime. Only the caller needs an identity and there is one caller. Run the Server on a VM or a small GKE cluster. Have the coordinator present its Cloud Run metadata token to the Server and get back a JWT-SVID carrying whatever claims you want. Publish the JWKS through the OIDC Discovery Provider, point the AWS and Entra trust policies at it, and you have one SPIFFE ID and full control of the claim set.</p>
 
-  <p>That works on a whiteboard. Here is what each part costs.</p>
+  <p>That works on a whiteboard. Four things it costs.</p>
 
   <h3>The SVID is asserted, not attested</h3>
 
@@ -776,7 +683,7 @@
 
   <p>The CA signing key becomes the most valuable secret you own. Take it and you mint identities that AWS and Entra accept for your roles, and the metadata server they think they are trusting is never consulted.</p>
 
-  <p>The goal of this whole exercise was no long-lived secrets anywhere in the mesh. Today there are none. Google holds the signing key, and if that key is compromised it is Google's problem and everyone's problem at once. Adopting SPIFFE to remove secret zero would introduce a new one, more valuable than any it removed, on infrastructure you patch yourself.</p>
+  <p>The goal was no long-lived secrets anywhere in the mesh, and today there are none. Google holds the signing key, and if that key is compromised it is Google's problem and everyone's problem at once. Adopting SPIFFE to remove secret zero would introduce a new one, more valuable than any it removed, on infrastructure you patch yourself.</p>
 
   <h3>The GCP leg cannot use it</h3>
 
@@ -784,35 +691,18 @@
 
   <p>Two ways round it, neither good. Skip that leg and you run SPIFFE for two Clouds while the third keeps Google tokens — more mechanisms than you started with. Or exchange the SVID back into a Google credential through Workload Identity Federation, which means minting a Google token, converting it to an SVID, then converting it back.</p>
 
-  <h3>The pinning does not collapse to one</h3>
-
-  <p>Count the places again after adopting it:</p>
-
-  <ul>
-    <li>AWS — an IAM OIDC provider, plus a trust policy naming the SPIFFE ID</li>
-    <li>Entra — a federated credential naming issuer and subject</li>
-    <li>GCP — a workload identity pool and provider, or the invoker binding</li>
-    <li>SPIRE — registration entries, a fourth registry that did not exist before</li>
-  </ul>
-
-  <p>A trust domain unifies the format of an identity. It does not reduce the number of far ends that decide what the identity may do, because that decision belongs to each of them and cannot be delegated to your Server.</p>
-
   <h3>SPIFFE Federation is not the escape hatch</h3>
 
-  <p>The usual reply is that SPIFFE has federation built in, so let the trust domains federate.</p>
-
-  <p>The <a href="https://spiffe.io/docs/latest/spiffe-specs/spiffe_federation/">SPIFFE Federation specification</a> defines an exchange of <em>trust bundles</em> between trust domains, each publishing an HTTPS bundle endpoint the other polls. No identities are delegated and no keys are shared — the domains learn to verify each other's SVIDs and nothing more.</p>
+  <p>The usual reply is that SPIFFE has federation built in, so let the trust domains federate. The <a href="https://spiffe.io/docs/latest/spiffe-specs/spiffe_federation/">specification</a> defines an exchange of trust bundles between trust domains, each publishing an HTTPS bundle endpoint the other polls — no identities delegated, no keys shared, the domains simply learn to verify each other's SVIDs.</p>
 
   <p>That needs the far side to be a SPIFFE trust domain publishing a SPIFFE bundle endpoint. AWS is not one. Neither is Azure, nor Google. Federation is available exactly when both parties already run SPIFFE, which is meaning A again.</p>
 
-  <h3>It puts one endpoint you host in front of all three legs</h3>
+  <h3>And it puts one endpoint you host in front of all three legs</h3>
 
-  <p>This is the one I would refuse on even if the others were solved.</p>
-
-  <p>AWS and Entra validate a JWT-SVID by fetching your JWKS over the public internet. Every cross-Cloud call in the mesh then depends on a discovery endpoint you run, on DNS you manage, behind a certificate you renew.</p>
+  <p>This is the one I would refuse on even if the others were solved. AWS and Entra validate a JWT-SVID by fetching your JWKS over the public internet, so every cross-Cloud call depends on a discovery endpoint you run, on DNS you manage, behind a certificate you renew.</p>
 
   <div class="callout counter">
-    <p><strong>A multicloud mesh whose auth funnels through one self-hosted endpoint is not multicloud where it counts.</strong> Today the three legs fail independently — each depends on its own vendor's identity service, and no single outage takes all three. Add the discovery provider and you have three independent dependencies plus one shared one sitting in front of them.</p>
+    <p><strong>A multicloud mesh whose auth funnels through one self-hosted endpoint is not multicloud where it counts.</strong> Today the three legs fail independently — each depends on its own vendor's identity service, and no single outage takes all three. Add the discovery provider and you have three independent dependencies plus one shared one in front of them.</p>
     <p>Multicloud is supposed to buy independence. This spends it.</p>
   </div>
 
@@ -820,87 +710,70 @@
 
   <h2>Where SPIRE is the Right Call</h2>
 
-  <p>Meaning A, and not grudgingly. Inside a boundary you control, SPIRE does something the Clouds do not do for you.</p>
+  <p>Meaning A, and the case is stronger than the space it gets here.</p>
 
-  <ul>
-    <li><strong>Your Agents run on Kubernetes.</strong> Nodes exist, the k8s node attestor works, and every objection above except the operational one disappears.</li>
-    <li><strong>You have a lot of identities.</strong> Past a dozen across three Clouds, verifying pinnings by hand stops working and one trust domain starts paying for itself.</li>
-    <li><strong>You need workload-to-workload mTLS.</strong> X.509-SVIDs beat anything you would assemble from three Clouds' primitives.</li>
-  </ul>
+  <p><strong>On Kubernetes, nearly every objection above disappears.</strong> Nodes exist, so the k8s node attestor works and the identity is genuinely attested rather than re-signed. The Workload API is a Unix socket next to the workload, so there is no public endpoint in the credential path and no shared failure mode. Workload attestation can distinguish a pod, a service account and a container image, which is finer than a Cloud service account and finer than anything in this mesh — the coarseness problem described earlier is a serverless problem, and SPIRE solves it where it can reach.</p>
 
-  <p>None of those describe a serverless Agent mesh calling managed runtimes on three vendors.</p>
+  <p><strong>At scale the pinning arithmetic reverses.</strong> Three identities across three Clouds is a script. Fifty microservices with per-service identities is not, and one trust domain with registration entries is a better instrument than fifty sets of trust policies in three vendors' formats.</p>
 
-  <h2>What a Valid Alternative Looks Like</h2>
+  <p><strong>And X.509-SVIDs give you mutual TLS between workloads</strong>, which none of the three Clouds' federation primitives provide. If services need to authenticate each other rather than authenticate to a Cloud API, SPIFFE is not competing with the metadata server at all — it is doing something the metadata server does not do.</p>
 
-  <p>Follow the split the standards already made. A credential identifies the workload. A separate token carries the chain. Four layers, each with a specification behind it, none needing a node.</p>
+  <p>The argument in this article is narrow, and it is worth stating as such: SPIRE is the wrong tool for a serverless Agent mesh calling managed runtimes on three vendors. It is a good tool for the case it was designed for, and that case is common.</p>
+
+  <h2>What to Build Instead</h2>
+
+  <p>Follow the split the standards made. A credential identifies the workload. A separate token carries the chain. Four layers, none needing a node.</p>
 
   <div class="opt">
     <span class="verdict">Layer 1 — who is calling</span>
     <h3>Platform workload identity, per destination</h3>
     <p>Keep the metadata mint. It is attested by the only party positioned to attest anything on serverless, costs nothing to run, and WIMSE documents it as an established pattern rather than a shortcut.</p>
-    <p>Enforce audience separation: one token per destination, never a platform-internal credential reused against an external STS. That is what stops a token minted for one boundary being replayed at another.</p>
+    <p>Enforce audience separation: one token per destination, never a platform-internal credential reused against an external STS.</p>
   </div>
 
   <div class="opt">
     <span class="verdict">Layer 2 — on whose behalf, through whom</span>
     <h3>A transaction token for the call chain</h3>
     <p>The layer this mesh does not have, and the one the Agent-identity articles are really asking for. A Transaction Token Service sits at the edge, takes the incoming request and whatever authenticated the requester, and issues a short-lived signed JWT with <code>sub</code> for the principal and <code>act</code> for the Agent acting. Each Agent presents it and requests a new one to call the next hop, so the chain accumulates instead of being asserted.</p>
-    <p>Two properties make this the right shape. The token is immutable in transit, so a downstream Agent cannot widen the context it was handed or fabricate a transaction that never started. And it is separate from the credential, so it is unaffected by three Clouds each dictating their own credential format.</p>
-    <p>The Txn-Token Service is something you run. It is not in the credential path. If it is down you stop starting new work; you do not lose the ability to authenticate, and no Cloud is fetching keys from you to validate a login.</p>
+    <p>The token is immutable in transit, so a downstream Agent cannot widen the context it was handed. And it is separate from the credential, so it is unaffected by three Clouds each dictating their own credential format.</p>
+    <p>The service is something you run, and unlike a SPIRE Server it is not in the credential path. If it is down you stop starting new work; you do not lose the ability to authenticate, and no Cloud is fetching keys from you to validate a login.</p>
   </div>
 
   <div class="opt">
     <span class="verdict">Layer 3 — carried by the protocol</span>
     <h3>A2A message metadata, not the credential</h3>
     <p>The transaction token travels in the A2A message. The extension mechanism added in v1.0.1 is the sanctioned place, and the <strong>Secure Passport</strong> extension already defines a <code>CallerContext</code> attached beside the task with a client identifier, state and a signature.</p>
-    <p>Use the extension as the envelope and a transaction token as the payload and the two gaps cancel. Secure Passport supplies a standard carrier every A2A implementation can be taught to read. The transaction token supplies the delegation semantics and signing model Secure Passport leaves open.</p>
-    <p>Declare it on the Agent Card as well. A2A carries <code>securitySchemes</code> in OpenAPI 3 shape plus a <code>security</code> block mapping scopes to individual skills, so a client learns what an Agent requires by reading rather than by failing. Most deployments, this one included, declare far less than the spec allows.</p>
+    <p>Use the extension as the envelope and a transaction token as the payload and the two gaps cancel. Secure Passport supplies a carrier every A2A implementation can read. The transaction token supplies the delegation semantics and signing model Secure Passport leaves open.</p>
+    <p>Declare it on the Agent Card as well. A2A carries <code>securitySchemes</code> in OpenAPI 3 shape plus a <code>security</code> block mapping scopes to individual skills. Most deployments, this one included, declare far less than the spec allows.</p>
   </div>
 
   <div class="opt">
     <span class="verdict">Layer 4 — narrowing, per hop</span>
     <h3>Attenuate where the Cloud supports it</h3>
-    <p>Where a Cloud lets you narrow a credential below what the role permits, do it per call rather than per deployment. On the AWS leg an inline session policy on <code>AssumeRoleWithWebIdentity</code> intersects with the role and can never widen it, so a session can be scoped to the single action a hop needs.</p>
-    <p>Measured on this mesh: narrow the session to card discovery and the invocation is refused; narrow it to invocation and the card fetch is refused first. Both refusals name the session policy as the layer that said no. This is the one rule of the three a deployment can demonstrate rather than assert.</p>
+    <p>Where a Cloud lets you narrow a credential below what the role permits, do it per call rather than per deployment. The measurement at the top of this article is that layer working: the session narrowed to discovery is refused the invocation, the session narrowed to invocation is refused the card, and each refusal names the session policy as the layer that said no.</p>
   </div>
-
-  <h3>Why this beats bolting on SPIRE</h3>
-
-  <p>Layer 1 is free and already attested. Layer 2 is a service you run, outside the credential path, so its failure mode is no new work rather than no authentication anywhere. Layer 3 is protocol machinery that already exists. Layer 4 is a request parameter.</p>
-
-  <p>The SPIRE design puts a service you run and a public discovery endpoint <em>inside</em> the credential path for all three legs, to obtain claim control that layer 2 provides without touching credentials at all.</p>
-
-  <p>Transaction Tokens are at draft 08 and the Agent extension is an individual submission. Layers 1, 3 and 4 are available today regardless of what happens to layer 2, and the decomposition holds either way.</p>
 
   <h3>The two-afternoon version</h3>
 
-  <p>If none of that is happening this quarter, the useful subset is small.</p>
+  <p>Put a requester field on the run record. Until a run carries who asked for it, the audit trail names the coordinator as the actor for everything — the original complaint in every one of these articles, fixable with no new components.</p>
 
-  <p>Put a requester field on the run record. Until a run carries who asked for it, the audit trail names the coordinator as the actor for everything — the original complaint in every one of these articles, fixable in an afternoon with no new components.</p>
-
-  <p>Then use <code>RoleSessionName</code>. Required on every <code>AssumeRoleWithWebIdentity</code> call, caller's choice, two to sixty-four characters, and it lands in the assumed-role ARN and in CloudTrail. It is the only caller-supplied identity string in this mesh that reaches a Cloud provider's audit log, and it is currently a constant. A run correlator there makes a CloudTrail entry traceable to a specific run, for one extra STS call per run.</p>
+  <p>Then use <code>RoleSessionName</code>. Required on every <code>AssumeRoleWithWebIdentity</code> call, caller's choice, two to sixty-four characters, and it lands in the assumed-role ARN and in CloudTrail. It is the only caller-supplied identity string in this mesh that reaches a Cloud provider's audit log, and it is currently a constant.</p>
 
   <h3>Two I would not start with</h3>
 
   <p>Running your own OIDC issuer gets you claim control and makes you an identity provider. Key custody, rotation and availability become yours, and you inherit the public-endpoint failure mode without the attestation that justified it.</p>
 
-  <p>A single egress broker holding all three federations builds the target you least want. This project's own coordinator was open to the internet on a public invoker binding with three sets of federated credentials behind it. A broker makes that surface the architecture rather than the accident.</p>
+  <p>A single egress broker holding all three federations builds the target you least want — this project's own coordinator was open to the internet with three sets of federated credentials behind it, and a broker makes that surface the architecture rather than the accident.</p>
 
   <h2>Summary</h2>
 
-  <p>Three Agents are deployed across GCP, AWS and Azure with a coordinator on Cloud Run, federating three ways with no stored secrets and eight controls confirming it. The protocol never needed a change. The auth strategy took the effort and is what would break first.</p>
+  <p>Cross-Cloud Agent auth is quadratic. Three Clouds is six directed edges, four is twelve, and each cell is the intersection of one Cloud's mint format with another Cloud's accept rules.</p>
 
-  <p>SPIFFE and SPIRE are the default recommendation for that strategy and they solve the other multicloud problem — identity for workloads inside a boundary you control. An Agent mesh is the case where you own one end and three vendors dictate the rest. SPIRE removes none of the federations, adds a Server and a public endpoint, and needs a node to attest that serverless runtimes do not have.</p>
+  <p>The mint side has converged: all three Clouds now issue an OIDC JWT with a caller-chosen audience to a workload holding no secret, AWS most recently. The accept side has not — AgentCore validates a token from any OIDC issuer, and Cloud Run and Container Apps take only their own. That is where the quadratic count comes from, and it is a change to two products rather than an industry-wide adoption of anything.</p>
 
-  <p>The deeper reason is that a Cloud identity has no meaning outside its Cloud. AWS checks Google's signature and then applies a rule you wrote about a number it has never seen. Every far end decides locally what a foreign identity may do, so the mapping exists once per boundary no matter who issues the token. Change the issuer and you have changed the signature, not the arithmetic.</p>
+  <p>SPIFFE and SPIRE do not fix it, because a Cloud identity has no meaning outside its Cloud. Each far end decides locally what a foreign signature may do, so the mapping exists once per boundary no matter who signs. Change the issuer and you have changed the signature, not the arithmetic — while adding a Server, a public endpoint and a CA key to a mesh that had no secrets.</p>
 
-  <p>What is missing is narrower than the articles suggest, and the standards bodies have already divided it correctly. A credential identifies the workload and the Clouds hand you an attested one for free. A separate token carries the call chain, because that context cannot survive inside a credential three vendors each define differently. WIMSE is standardising the first half, OAuth Transaction Tokens the second, and A2A's extension mechanism is where the second one travels.</p>
-
-  <p>The thing to watch is that the Clouds are not waiting for any of it. AWS, Microsoft and Google all shipped Agent identity in 2026, each as a registry inside its own boundary, and cross-Cloud works where one vendor has chosen to support another. AWS accepts Entra as an inbound provider; Microsoft surfaces Bedrock and Vertex Agents in its registry. Useful integrations, and the same structure as the trust policies underneath — a local decision at each boundary, made bilaterally, one layer higher up.</p>
-
-  <p>That is the argument for keeping the credential layer boring. Federation you configure yourself works the same on every Cloud and does not move when a vendor changes which competitor it supports this quarter.</p>
-
-  <p>And if one thing were to change, it is smaller than any of the proposals. Three Clouds is six directed edges and four Clouds is twelve, because each edge is settled separately by what the caller presents and what the callee accepts. Make every ingress accept an OIDC discovery URL, an audience and a subject condition — which AgentCore already does — and the matrix collapses from N² to N. Three mints, three accept-configurations, and a fourth Cloud costs one of each. No new identity format, no neutral issuer, no CA to run. Just two more products dropping a restriction that one of them has already dropped.</p>
+  <p>What is missing is narrower than the articles suggest, and the standards split it correctly: a credential identifies the workload, and a separate token carries the call chain. Three Agents are deployed across three Clouds with no stored secrets and eight controls behind them, and the one thing measured here that the discourse only asserts is that permissions do narrow across a federation boundary, in both directions, with the provider naming which layer refused.</p>
 
   <footer class="colophon">
     <div>Measured 25 August 2026 · deployed mesh, single runs</div>

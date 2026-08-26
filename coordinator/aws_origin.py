@@ -26,6 +26,21 @@ execution role is not one. Outside EKS/IRSA or Cognito there is nothing for AWS
 to present, so this leg falls back to a client secret and the mesh stops being
 secretless. That is a measured boundary, not an implementation shortcut, and
 ``EntraClientSecretAuth`` is loud about it for exactly that reason.
+
+**Dated 2026-08-25, and this is the interesting part.** The paragraph above was
+true when it was written and is not any more. AWS shipped *outbound identity
+federation* in November 2025: an account gets its own OIDC issuer URL serving
+``/.well-known/openid-configuration`` and ``/.well-known/jwks.json``, and a
+workload calls ``sts:GetWebIdentityToken`` to obtain a signed JWT with an
+audience it chooses. That is exactly the shape Entra's FIC wants, so this leg
+can be keyless now and ``entra-client-secret`` is no longer the only option.
+
+Not yet implemented here, so the code still does what the comment describes.
+What the miss is worth recording for: a boundary was measured honestly, written
+down clearly, and read a year later as though it were a property of the two
+clouds rather than a fact about a date. That is the same failure mode as a pin
+nobody re-tests -- see the ground rule in CLAUDE.md. Re-check a vendor boundary
+before citing it, not only before relying on it.
 """
 
 import json

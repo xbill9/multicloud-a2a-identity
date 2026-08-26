@@ -564,6 +564,58 @@
 
   <p>Run the Server yourself and the claim set is yours. That is a real gain and it does not shrink as the mesh gets smaller. It is also not what "adopt SPIFFE for workload identity" is selling — you already have workload identity. The gap is claims, which is narrower and has cheaper answers.</p>
 
+  <h2>But You Could Make It Work</h2>
+
+  <p>You could, and the design is worth writing out properly, because it is the obvious response to everything above and it is not silly.</p>
+
+  <p>Nobody says the SPIRE Agent has to run on the serverless runtime. Only the <em>caller</em> needs an identity, and there is one caller. So: run the Server on a VM or a small GKE cluster. Have the coordinator present its Cloud Run metadata token to the Server and get back a JWT-SVID carrying whatever claims you want. Publish the JWKS through the OIDC Discovery Provider, point the AWS and Entra trust policies at it, and you have one SPIFFE ID and full control of the claim set.</p>
+
+  <p>That works on a whiteboard. Here is what each part of it costs.</p>
+
+  <h3>The SVID is asserted, not attested</h3>
+
+  <p>SPIFFE's whole value is attestation — an identity bound to something observed about the workload. In this design the Server observes nothing. It receives a Google token and re-signs its claims under a new name.</p>
+
+  <p>So the SPIFFE ID means exactly what the Google token meant, no more, because that is the only evidence in the chain. You have not added attestation. You have added a signing hop, and a private key to look after. The resulting identity is strictly weaker than the one it wrapped: same evidence, extra key.</p>
+
+  <h3>It creates a new secret zero, and it is the best one in the building</h3>
+
+  <p>The CA signing key is now the most valuable secret you own. Anyone who takes it mints identities that AWS and Entra will accept for your roles, and the metadata server they are impersonating never gets consulted.</p>
+
+  <p>The stated goal of this whole exercise was no long-lived secrets anywhere in the mesh. Today there are none — Google holds the signing key, and if that key is compromised it is Google's problem and everyone's problem at once. Adopting SPIFFE to remove secret zero would introduce a new one, more valuable than any it removed, on infrastructure you patch yourself.</p>
+
+  <h3>The GCP leg cannot use it anyway</h3>
+
+  <p>Cloud Run's invoker check validates <strong>Google-signed</strong> ID tokens. It does not take an arbitrary external issuer, so a JWT-SVID is not a credential that leg can use.</p>
+
+  <p>You have two ways round that and neither is good. Skip that leg, and you are running SPIFFE for two of three Clouds while the third keeps using Google tokens — more mechanisms than you started with, not fewer. Or exchange the SVID back into a Google credential through Workload Identity Federation, which means minting a Google token, converting it to an SVID, then converting it back to a Google token. A round trip to arrive where you began.</p>
+
+  <h3>The pinning does not collapse to one</h3>
+
+  <p>The promised win was three places down to one. Count the places again after adopting it:</p>
+
+  <ul>
+    <li>AWS — an IAM OIDC provider, plus a trust policy naming the SPIFFE ID</li>
+    <li>Entra — a federated credential naming the issuer and subject</li>
+    <li>GCP — a workload identity pool and provider, or the invoker binding</li>
+    <li>SPIRE — registration entries, which is a fourth registry that did not exist before</li>
+  </ul>
+
+  <p>A trust domain unifies the <em>format</em> of the identity. It does not reduce the number of places that decide what the identity may do, because that decision belongs to each far end and cannot be delegated to your Server. Three mappings before, three mappings and a registry after.</p>
+
+  <h3>It puts one endpoint you host in the path of all three legs</h3>
+
+  <p>This is the one I would refuse on even if the others were solved.</p>
+
+  <p>AWS and Entra validate a JWT-SVID by fetching your JWKS over the public internet. So every cross-Cloud call in the mesh now depends on a discovery endpoint you run, on DNS you manage, behind a certificate you renew.</p>
+
+  <div class="callout counter">
+    <p><strong>A multicloud mesh whose auth funnels through one self-hosted endpoint is not multicloud where it counts.</strong> Today the three legs fail independently — each depends on its own vendor's identity service, and no single outage takes all three. Add the discovery provider and you have three independent dependencies plus one shared one, sitting in front of all of them.</p>
+    <p>You would be introducing a common failure mode into the part of the system built specifically to avoid one. Multicloud is supposed to buy independence; this spends it.</p>
+  </div>
+
+  <p>None of these are objections to SPIFFE. They are objections to bolting a token exchange onto a substrate the design was not drawn for. Every one of the five costs you something the current arrangement provides for nothing.</p>
+
   <h2>Where SPIRE is the Right Call</h2>
 
   <p>Meaning A, and it is not a grudging concession — inside a boundary you control, SPIRE is doing something the Clouds do not do for you.</p>

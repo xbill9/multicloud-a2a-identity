@@ -341,9 +341,9 @@
     <p class="standfirst">A2A is not what limits a multi-Cloud Agent mesh. Auth is. The standard advice is to adopt SPIFFE and SPIRE, and on a deployed three-Cloud mesh that advice answers a different question than the one being asked.</p>
     <dl class="facts">
       <div class="fact"><dt>Clouds in the mesh</dt><dd>3</dd></div>
-      <div class="fact"><dt>Protocol changes needed</dt><dd>0</dd></div>
+      <div class="fact"><dt>Directed cross-Cloud edges</dt><dd>6</dd></div>
+      <div class="fact"><dt>Edges needing a secret</dt><dd>1</dd></div>
       <div class="fact"><dt>Federations SPIRE removes</dt><dd>0</dd></div>
-      <div class="fact"><dt>Serverless RFC open since</dt><dd>2020</dd></div>
     </dl>
   </header>
 
@@ -448,6 +448,143 @@
     <p><strong>The substrate pulls two ways at once.</strong> The identity is too coarse — one service account across every revision and request. The compute is too fluid — no durable node to attest. SPIRE needs a stable node it can vouch for and an agent living on it long enough to vouch for the workloads above. Serverless offers neither half.</p>
     <p>On a substrate with no fixed node, the platform is the only party that can attest anything. It is the only one that knows which image is running, in which revision, under which service account, at the instant the token is minted.</p>
   </div>
+
+  <h2>Three Clouds, Three Vocabularies</h2>
+
+  <p>If every Cloud defines its own Agent identity, the obvious question is how any of it works across Clouds at all. The answer is that it works one ordered pair at a time, and it is worth going through properly, because the shape of the problem is not what the vendor diagrams suggest.</p>
+
+  <p>Start with what each Cloud lets a workload <em>present</em> as proof of who it is.</p>
+
+  <div class="legs">
+    <div class="leg">
+      <span class="route">Google</span>
+      <span class="how">An OIDC JWT from the metadata server, with a caller-chosen audience</span>
+    </div>
+    <div class="leg">
+      <span class="route">AWS</span>
+      <span class="how">A SigV4-signed <code>GetCallerIdentity</code> request — not a token at all</span>
+    </div>
+    <div class="leg">
+      <span class="route">Azure</span>
+      <span class="how">An OIDC JWT from Entra, for a resource Entra recognises</span>
+    </div>
+  </div>
+
+  <p>Two of those are JWTs and one is a signed HTTP request. That difference is not cosmetic, and it decides which pairs can work.</p>
+
+  <p>Now what each Cloud <em>accepts</em>. Google's Workload Identity Federation is the most permissive: it takes a JWT from any OIDC issuer with a discovery document, and it also takes the AWS-shaped subject token, which it replays against AWS STS to learn who signed it. AWS takes JWTs from an OIDC issuer, natively for <code>accounts.google.com</code> and via an explicit IAM OIDC provider for anything else. Entra takes JWTs from an issuer publishing OIDC discovery, and nothing else.</p>
+
+  <h3>The six edges</h3>
+
+  <p>Three Clouds means six directed cross-Cloud edges, and each is decided independently by what the caller can present and what the callee will accept.</p>
+
+  <div class="scroll">
+    <table>
+      <caption>Directed edges between the three Clouds</caption>
+      <thead>
+        <tr><th>Edge</th><th>Mechanism</th><th>Keyless</th><th>Status here</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">GCP → AWS</td>
+          <td>Metadata JWT to STS AssumeRoleWithWebIdentity</td>
+          <td><span class="chip pass">Yes</span></td>
+          <td>Deployed</td>
+        </tr>
+        <tr>
+          <td class="mono">GCP → Azure</td>
+          <td>Metadata JWT to an Entra federated credential</td>
+          <td><span class="chip pass">Yes</span></td>
+          <td>Deployed</td>
+        </tr>
+        <tr>
+          <td class="mono">AWS → GCP</td>
+          <td>Signed GetCallerIdentity to Google STS, then impersonation</td>
+          <td><span class="chip pass">Yes</span></td>
+          <td>Implemented</td>
+        </tr>
+        <tr>
+          <td class="mono">AWS → Azure</td>
+          <td>Client secret</td>
+          <td><span class="chip refused">No</span></td>
+          <td>Implemented</td>
+        </tr>
+        <tr>
+          <td class="mono">Azure → GCP</td>
+          <td>Entra JWT to Google workload identity federation</td>
+          <td><span class="chip pass">Yes</span></td>
+          <td>Not built</td>
+        </tr>
+        <tr>
+          <td class="mono">Azure → AWS</td>
+          <td>Entra JWT to an IAM OIDC provider for the Entra issuer</td>
+          <td><span class="chip pass">Yes</span></td>
+          <td>Not built</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Six edges, five mechanisms, no two configured the same way. The first four are in this repository. The last two follow from the same rules and have not been deployed here.</p>
+
+  <h3>The edge that does not close</h3>
+
+  <p>AWS to Azure is the one that pays for the whole argument.</p>
+
+  <p>Google's federation accepts the AWS-shaped subject token, so AWS to GCP is keyless without AWS ever minting a JWT. Entra has no equivalent. Its federated credential wants a JWT assertion from an issuer with OIDC discovery, and an ECS task role, a Lambda execution role or an AgentCore runtime role is not one. Outside EKS with IRSA, or Cognito, AWS has nothing of that shape to present.</p>
+
+  <div class="callout counter">
+    <p><strong>So that leg falls back to a stored client secret, and the mesh stops being secretless on exactly one of six edges.</strong> Not because anyone implemented it lazily — because the caller's native assertion is a signed request and the callee only reads JWTs from discoverable issuers. The two ends have no overlapping vocabulary.</p>
+  </div>
+
+  <p>This is what "different standards" means in practice. Not competing formats for the same idea, which you could convert between. Two ends that disagree about what an assertion <em>is</em>.</p>
+
+  <h3>The arithmetic gets worse before it gets better</h3>
+
+  <p>Three Clouds is six edges. Four is twelve. Each Cloud you add brings two edges for every Cloud already present, so the integration count grows as N², and every cell is somebody's bilateral decision to support somebody else.</p>
+
+  <p>That is why the vendor Agent identity products cannot be the general answer, however good each one is. AWS supporting Entra as an inbound provider fills one cell. Microsoft surfacing Bedrock and Vertex Agents in its registry fills a few more. Nobody is going to fill a quadratic matrix by negotiation, and the cells that stay empty are the ones where two vendors have no commercial reason to care about each other's workloads.</p>
+
+  <h3>What would actually make it work</h3>
+
+  <p>The fix is not a new identity format, and it is not a neutral issuer everyone adopts. It is narrower than either, and two of these three Clouds are close to it already.</p>
+
+  <p>Look again at where the asymmetry sits. Every Cloud can already mint something. The problem is on the <em>accept</em> side — whether an ingress will take a token from an issuer it does not own.</p>
+
+  <div class="scroll">
+    <table>
+      <caption>Will the ingress accept a foreign issuer?</caption>
+      <thead>
+        <tr><th>Runtime</th><th>Inbound auth</th><th>Foreign issuer</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">Bedrock AgentCore</td>
+          <td>SigV4, or a custom JWT authorizer with a discovery URL and allowed audiences</td>
+          <td><span class="chip pass">Yes</span></td>
+        </tr>
+        <tr>
+          <td class="mono">Azure Container Apps</td>
+          <td>Entra on the ingress</td>
+          <td><span class="chip refused">Entra only</span></td>
+        </tr>
+        <tr>
+          <td class="mono">Cloud Run</td>
+          <td>IAM invoker check against a Google-signed ID token</td>
+          <td><span class="chip refused">Google only</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>AgentCore already does the thing that would fix this. Give it a discovery URL and a list of accepted audiences and it will validate a token from an issuer AWS has never heard of. That is the whole requirement, it is ordinary OIDC, and it needs no new specification.</p>
+
+  <div class="callout">
+    <p><strong>If every Cloud's ingress accepted an OIDC discovery URL, an audience and a subject condition, the matrix would collapse from N² to N.</strong> Each Cloud publishes one issuer for its workloads. Each Cloud accepts any issuer, subject to conditions you write. Six edges become three mints and three accept-configurations, and adding a fourth Cloud costs one of each rather than six new integrations.</p>
+  </div>
+
+  <p>That is a change to three products, not a change to the industry. It also explains why the SPIRE proposal feels like it should work and does not pay off here: SPIRE is one issuer everyone trusts, which is the same collapse achieved by adding a party rather than by removing a restriction. The restriction is the cheaper thing to remove, and one vendor has already removed it.</p>
+
 
   <h2>There is More Prior Art Than It Looks Like</h2>
 
@@ -762,6 +899,8 @@
   <p>The thing to watch is that the Clouds are not waiting for any of it. AWS, Microsoft and Google all shipped Agent identity in 2026, each as a registry inside its own boundary, and cross-Cloud works where one vendor has chosen to support another. AWS accepts Entra as an inbound provider; Microsoft surfaces Bedrock and Vertex Agents in its registry. Useful integrations, and the same structure as the trust policies underneath — a local decision at each boundary, made bilaterally, one layer higher up.</p>
 
   <p>That is the argument for keeping the credential layer boring. Federation you configure yourself works the same on every Cloud and does not move when a vendor changes which competitor it supports this quarter.</p>
+
+  <p>And if one thing were to change, it is smaller than any of the proposals. Three Clouds is six directed edges and four Clouds is twelve, because each edge is settled separately by what the caller presents and what the callee accepts. Make every ingress accept an OIDC discovery URL, an audience and a subject condition — which AgentCore already does — and the matrix collapses from N² to N. Three mints, three accept-configurations, and a fourth Cloud costs one of each. No new identity format, no neutral issuer, no CA to run. Just two more products dropping a restriction that one of them has already dropped.</p>
 
   <footer class="colophon">
     <div>Measured 25 August 2026 · deployed mesh, single runs</div>

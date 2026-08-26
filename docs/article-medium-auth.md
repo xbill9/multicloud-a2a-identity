@@ -28,7 +28,7 @@ No stored secrets on any of them. Each leg has a positive control and a negative
 
 An inline session policy on `AssumeRoleWithWebIdentity` intersects with the role's own policy and can never widen it, so a session can be scoped below what the role permits, per call rather than per deployment.
 
-![Session policy varied on the AWS leg, measured on the deployed mesh on 25 August 2026. With the session policy allowing GetAgentCard only, the card fetch is allowed and the invocation is refused. With the session policy allowing InvokeAgentRuntime only, the card fetch is refused and the invocation is never reached. Unattenuated, both are allowed. Both refusals name the session policy as the layer that refused](img/medium/auth-02-attenuation.png)
+![Session policy varied on the AWS leg, measured on the deployed mesh on 25 August 2026. With the session policy allowing GetAgentCard only, the card fetch is allowed and the invocation is refused. With the session policy allowing InvokeAgentRuntime only, the card fetch is refused and the invocation is never reached. Unattenuated, both are allowed. Both refusals name the session policy as the layer that refused.](img/medium/auth-02-attenuation.png)
 
 Neither action substitutes for the other in either direction. Both refusals name the session policy as the layer that refused, which distinguishes an attenuation refusal from a role refusal without guessing. The invoke-only run is what proves discovery genuinely succeeded in the card-only run rather than being skipped.
 
@@ -84,7 +84,7 @@ On a substrate with no fixed node, the platform is the only party that can attes
 
 Three clouds means six directed cross-cloud edges, and each is settled independently by what the caller can present and what the callee will accept. This mesh runs three of them — it is rooted on GCP, so the GCP-origin rows are what is deployed. The rest come from the reverse-root experiment in the repository and from the vendors' own documentation.
 
-![Six directed edges between three clouds, sourced 25 August 2026. GCP to AWS uses a metadata JWT to STS AssumeRoleWithWebIdentity, keyless, deployed and controlled. GCP to Azure uses a metadata JWT to an Entra federated credential, keyless, deployed and controlled. AWS to GCP uses a signed GetCallerIdentity to Google STS, keyless, code written but not deployed. AWS to Azure uses STS GetWebIdentityToken to an Entra credential, keyless, vendor-documented but not built. Azure to GCP uses an Entra JWT to a Google workload identity pool, keyless, vendor-documented but not built. Azure to AWS uses an Entra JWT to an IAM OIDC provider, keyless, and follows from both vendors' documentation rather than from a measurement](img/medium/auth-01-six-edges.png)
+![Six directed edges between three clouds, sourced 25 August 2026, all six keyless. GCP to AWS and GCP to Azure are deployed and controlled, via a metadata JWT to STS AssumeRoleWithWebIdentity and to an Entra federated credential. AWS to GCP is code written but not deployed. AWS to Azure and Azure to GCP are vendor-documented but not built. Azure to AWS follows from both vendors' docs rather than a measurement, the weakest cell.](img/medium/auth-01-six-edges.png)
 
 Read the evidence column as four distinct claims. **Deployed and controlled** means it ran against the live cloud and has a negative control behind it. **Code written** means the implementation exists in this repository and has not been run against the provider. **Vendor-documented** means the provider documents the mechanism and this project has not built it. The last row combines two vendors' documented capabilities and is the weakest cell in the table.
 
@@ -104,7 +104,7 @@ It also removes a claim these articles lean on. AWS's outbound tokens can carry 
 
 If all three clouds can mint an OIDC JWT, the quadratic count has to be coming from somewhere else. It is coming from the ingress — whether a runtime will validate a token from an issuer it does not own.
 
-![Will the ingress accept a foreign issuer? Bedrock AgentCore accepts SigV4 or a custom JWT authorizer taking any OIDC issuer, so yes. Azure Container Apps uses Entra on the ingress, so Entra only. Cloud Run uses an IAM invoker check against a Google-signed ID token, so Google only. Every cloud can mint an OIDC JWT for a workload holding no secret, and one of the three will validate a token from an issuer it does not own](img/medium/auth-03-ingress.png)
+![Will the ingress accept a foreign issuer? Bedrock AgentCore accepts SigV4 or a custom JWT authorizer taking any OIDC issuer, so yes. Azure Container Apps uses Entra on the ingress, so Entra only. Cloud Run uses an IAM invoker check against a Google-signed ID token, so Google only. Every cloud can mint an OIDC JWT for a workload holding no secret, and one of the three will validate a token from an issuer it does not own.](img/medium/auth-03-ingress.png)
 
 AgentCore's inbound JWT authorizer takes a discovery URL, a list of allowed audiences validated against `aud`, and a list of allowed clients validated against `client_id`. Any OIDC-compliant issuer. That is ordinary OIDC and it needs no new specification.
 
@@ -128,7 +128,7 @@ This is the microservices industry having already learned the lesson. Passing th
 
 **And the products are where cross-cloud actually shows up.**
 
-![Vendor agent identity in 2026. Bedrock AgentCore Identity is generally available, an inbound authorizer plus an outbound token vault. Microsoft Entra Agent ID is in preview, treating agents as directory objects under Conditional Access. Vertex AI Agent Engine identities have shipped, providing agent identities inside Google's agent runtime. Three registries, no interoperable protocol between them, and cross-cloud works where one vendor has chosen to support another](img/medium/auth-05-vendor-products.png)
+![Vendor agent identity in 2026. Bedrock AgentCore Identity is generally available, an inbound authorizer plus an outbound token vault. Microsoft Entra Agent ID is in preview, treating agents as directory objects under Conditional Access. Vertex AI Agent Engine identities have shipped, inside Google's agent runtime. Three registries, no interoperable protocol between them, and cross-cloud works where one vendor has chosen to support another.](img/medium/auth-05-vendor-products.png)
 
 They address cross-cloud bilaterally. Microsoft documents securing a Bedrock agent with Entra Agent ID and surfacing agents from Bedrock, Vertex and Databricks in one registry. AWS documents Entra as an inbound identity provider for AgentCore Runtime and Gateway.
 
@@ -140,7 +140,7 @@ One detail from the AgentCore documentation is worth noting against the discours
 
 Put SPIRE against the split the standards made and it is a credential system — a good one, for meaning A. It says nothing about a call chain, and the delegation problem these articles open with sits entirely in the second half.
 
-![Adopting SPIRE on a serverless agent mesh. The token minter goes from a managed metadata server to a SPIRE Server you run. Attestation on serverless goes from built into the runtime to an open RFC since 2020. Public endpoints to operate goes from none to OIDC discovery on your own DNS. Federations still required stays at three. Places identity is pinned goes from three to one. Control over token claims goes from none to yours. SPIRE changes which issuer the three clouds trust and does not reduce how many of them there are](img/medium/auth-04-spire-cost.png)
+![Adopting SPIRE on a serverless agent mesh. The token minter goes from a managed metadata server to a SPIRE Server you run. Attestation on serverless goes from built into the runtime to an open RFC since 2020. Public endpoints to operate goes from none to OIDC discovery on your own DNS. Federations still required stays at three. Places identity is pinned goes from three to one. Control over token claims goes from none to yours.](img/medium/auth-04-spire-cost.png)
 
 Every agent in this mesh consumes external OIDC and carries on doing so. AWS still needs a trust policy, Entra still needs a federated credential, Cloud Run still needs an invoker binding. SPIRE changes which issuer those three trust; it does not reduce their number, and configuring them is the work. Count the places afterwards and it is four, not one, because SPIRE registration entries are a registry that did not exist before.
 

@@ -77,9 +77,32 @@ Three things about that flow, each of which cost a wasted import to learn:
   multi-line rule — `needs_image()` in `make_gists.py` covers both cases, and
   `make_preview.py` imports it so the two cannot drift.
 
-- **Images need no work at all.** Medium fetches them, rehosts them at 800px
-  and takes the `<figcaption>` as the caption. That is the whole of step 2
-  below, done automatically.
+- ~~**Images need no work at all.**~~ **Half true, and the half that is false
+  is the accessible half.** Medium fetches them and rehosts them at 800px, and
+  that part is still free. But measured 2026-08-25 importing `auth-*.html`:
+  **both `alt` and `<figcaption>` were dropped on all five figures.** The
+  images arrived, the captions came back as the "Type caption for image
+  (optional)" placeholder, and every `alt` attribute was empty.
+
+  That matters more here than it looks, because in these articles the tables
+  *are* the images. Dropping alt and caption removes a third of the piece from
+  a screen reader and from Medium's own index. The earlier claim in this file
+  that alt text "survives" was true when written and is not now.
+
+  So after importing, **set alt text on every figure by hand.** The control is
+  on the image toolbar (select the image, then "Alt text"), and the field caps
+  at **500 characters** — a longer string is silently truncated mid-word at
+  500, which is how the six-edge alt first arrived ending "rather than a me".
+  The `![...]` alt text in `article-medium-auth.md` is written to fit that cap
+  for exactly this reason; keep it under 500 or the paste will not match the
+  source.
+
+- **The importer's direct-submit URL works and is worth keeping.** Submitting
+  the form leaves you at
+  `medium.com/p/import-story?xsrf=<token>&importUrl=<urlencoded>`, so the token
+  can be lifted from one manual submit and reused. Measured 2026-08-25: the
+  ordinary form field accepted synthetic keystrokes without trouble, so reach
+  for the direct URL only when it does not.
 
 After the import: check the subtitle took (step 5 below), and set the images
 full width.

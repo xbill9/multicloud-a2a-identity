@@ -34,14 +34,24 @@ import markdown
 import make_gists
 
 DOCS = Path(__file__).parent
-SLUGS = ("framework", "gde", "aws")
+SLUGS = ("framework", "gde", "aws", "auth")
 
 #: Where the `--web` pages are served from. Image sources are written absolute
 #: against this: a fetcher that rebuilds the page elsewhere has nothing to
 #: resolve a relative path against.
-SITE = "https://xbill9.github.io/multicloud-a2a-subagent"
-SCRATCH = Path("/tmp/claude-1000/-home-xbill-multicloud-a2a-subagent") \
-    / "6ddb71c6-f02a-46a7-ae5e-9981bdd7eead/scratchpad"
+#: Per-article, because this repo carries two series. The `auth` article lives
+#: in this repository; the three older slugs were written in the predecessor
+#: and their import URLs still have to resolve there, or a re-import of an
+#: already-published piece 404s.
+SITE_FOR = {
+    "framework": "https://xbill9.github.io/multicloud-a2a-subagent",
+    "gde": "https://xbill9.github.io/multicloud-a2a-subagent",
+    "aws": "https://xbill9.github.io/multicloud-a2a-subagent",
+    "auth": "https://xbill9.github.io/multicloud-a2a-identity",
+}
+SITE = SITE_FOR["framework"]
+SCRATCH = Path("/tmp/claude-1000/-home-xbill-multicloud-a2a-identity") \
+    / "8711ae35-4d25-4956-8e51-a3bea243339a/scratchpad"
 
 CSS = """
 :root {
@@ -275,7 +285,7 @@ def gistify(text: str, slug: str) -> str:
         block = next(it)
         entry = manifest[block["key"]]
         return "\n" + CODE_FIGURE.format(
-            img=f"{SITE}/img/medium/code/{block['key']}.png",
+            img=f"{SITE_FOR.get(slug, SITE)}/img/medium/code/{block['key']}.png",
             alt=_code_alt(block),
             filename=block["filename"],
             url=entry["url"]) + "\n"
@@ -313,7 +323,7 @@ def build(slug: str, out_path: Path, *, web: bool) -> Path:
         _n[0] += 1
         alt, src = match.group("alt"), match.group("src")
         if web:
-            source = f"{SITE}/{src}"
+            source = f"{SITE_FOR.get(slug, SITE)}/{src}"
             first_image = first_image or source
             # Caption is the alt text alone. Medium turns a figcaption into the
             # image's caption on import, which is exactly the text the
@@ -336,7 +346,7 @@ def build(slug: str, out_path: Path, *, web: bool) -> Path:
     # by the rule above.
     cover = DOCS / "img" / "medium" / f"00-cover-{slug}.png"
     if web and cover.exists():
-        first_image = f"{SITE}/img/medium/{cover.name}"
+        first_image = f"{SITE_FOR.get(slug, SITE)}/img/medium/{cover.name}"
         html = (f'<figure><img src="{first_image}" alt="{COVER_ALT[slug]}">'
                 f'<figcaption>{COVER_ALT[slug]}</figcaption></figure>\n') + html
     html = html.replace("<p><figure>", "<figure>").replace("</figure></p>", "</figure>")
@@ -350,7 +360,7 @@ def build(slug: str, out_path: Path, *, web: bool) -> Path:
             f'\n<meta property="og:title" content="{title}">'
             f'\n<meta property="og:description" content="{standfirst}">'
             + (f'\n<meta property="og:image" content="{first_image}">' if first_image else "")
-            + f'\n<link rel="canonical" href="{SITE}/medium-{slug}.html">'
+            + f'\n<link rel="canonical" href="{SITE_FOR.get(slug, SITE)}/medium-{slug}.html">'
         )
         body = (
             f'<article class="sheet">\n  <h1>{title}</h1>\n'
@@ -438,7 +448,7 @@ def publish_copy(slug: str, page: str) -> Path:
     for stale in IMPORT_DIR.glob(f"{slug}-*.html"):
         if stale != target:
             stale.unlink()
-    print(f"    import URL: {SITE}/import/{target.name}")
+    print(f"    import URL: {SITE_FOR.get(slug, SITE)}/import/{target.name}")
     return target
 
 

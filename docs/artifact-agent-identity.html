@@ -338,7 +338,7 @@
   <header class="masthead">
     <div class="eyebrow">Cross-Cloud A2A</div>
     <h1>Cross-Cloud Agent Auth is an N² Problem</h1>
-    <p class="standfirst">A2A is not what limits a multi-Cloud Agent mesh. Auth is. Three Clouds means six directed edges and each one is a separate integration — but the asymmetry that causes it sits in a narrower place than the usual advice suggests, and one vendor has already fixed its half.</p>
+    <p class="standfirst">A2A is not what limits a multi-Cloud Agent mesh. Auth is. Three Clouds means six directed edges and each one is a separate integration — but the asymmetry that causes it sits in a narrower place than the usual advice suggests, and one vendor has already done both halves of it.</p>
     <dl class="facts">
       <div class="fact"><dt>Clouds in the mesh</dt><dd>3</dd></div>
       <div class="fact"><dt>Directed cross-Cloud edges</dt><dd>6</dd></div>
@@ -479,7 +479,7 @@
 
   <h2>Six Edges</h2>
 
-  <p>Three Clouds means six directed cross-Cloud edges, and each is settled independently by what the caller can present and what the callee will accept.</p>
+  <p>Three Clouds means six directed cross-Cloud edges, and each is settled independently by what the caller can present and what the callee will accept. This mesh runs three of them — it is rooted on GCP, so the GCP-origin row of the table is what is deployed. The rest come from the reverse-root experiment in the repository and from the vendors' own documentation.</p>
 
   <div class="scroll">
     <table>
@@ -530,7 +530,7 @@
 
   <p>Read the evidence column as three distinct claims. <strong>Deployed and controlled</strong> means it ran against the live Cloud and has a negative control behind it. <strong>Code written</strong> means the implementation exists in this repository and has not been run against the provider. <strong>Vendor-documented</strong> means the provider documents the mechanism and this project has not built it — for Azure to GCP, Google documents the issuer as <code>https://sts.windows.net/TENANT_ID</code> with the Entra application ID URI as the allowed audience. The last row combines two vendors' documented capabilities and is the weakest cell in the table.</p>
 
-  <p>Six edges, five mechanisms, no two configured the same way. That is the quadratic problem in one table, and it is worth being precise about why it is quadratic: each cell is the intersection of one Cloud's mint format and another Cloud's accept rules, and neither is standardised.</p>
+  <p>Six edges, six configurations, no two alike. That is the quadratic problem in one table, and it is worth being precise about why it is quadratic: each cell is the intersection of one Cloud's mint format and another Cloud's accept rules, and neither is standardised.</p>
 
   <h3>The edge that closed while this was being written</h3>
 
@@ -549,7 +549,7 @@
       &amp;format=full
       &amp;licenses=FALSE</code></pre>
 
-  <p>Issuer, issued-at, expiry, audience, subject, authorized party, email, verified flag, and a Compute Engine block under <code>format=full</code>. No parameter adds a claim. A GCP-rooted caller cannot put a delegation chain in its token. An AWS-rooted one now can.</p>
+  <p>Issuer, issued-at, expiry, audience, subject, authorized party, email, verified flag, and a Compute Engine block under <code>format=full</code>. No parameter adds a claim, so a GCP-rooted caller cannot put anything of its own in the token it presents. An AWS-rooted caller can attach tags that arrive as custom claims — enough for attribute-based decisions at the far end, and short of a nested delegation chain, which is a structure neither minter defines.</p>
 
   <h2>The Accept Side is Where the Problem Lives</h2>
 
@@ -634,7 +634,9 @@
     <p><strong>Every one of those is a vendor integration, not a federation.</strong> Each Cloud keeps its own registry and its own mapping, and cross-Cloud works because one vendor decided to support another. Nobody fills a quadratic matrix by negotiation, and the cells that stay empty are the ones where two vendors have no commercial reason to care about each other's workloads.</p>
   </div>
 
-  <p>One detail from the AgentCore documentation is worth noting against the discourse these products are sold into: the outbound Microsoft credential provider is configured with a stored <code>clientSecret</code>. The Agent identity product, for its cross-Cloud leg, takes a long-lived secret. This mesh does that leg with a federated credential and none.</p>
+  <p>One detail from the AgentCore documentation is worth noting against the discourse these products are sold into: the outbound Microsoft credential provider is configured with a stored <code>clientSecret</code>. The Agent identity product, for its cross-Cloud leg, takes a long-lived secret.
+
+  <p>That is a separate mechanism from the outbound identity federation described above — a credential provider for OAuth access to Microsoft resources rather than workload identity — so the two are not in conflict. The observation is about the product: AWS ships a keyless way for a workload to authenticate to Entra, and its Agent identity service configures that leg with a client secret anyway. This mesh does it with a federated credential and none.</p></p>
 
   <h2>Where SPIRE Fits</h2>
 

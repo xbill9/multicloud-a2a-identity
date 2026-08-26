@@ -449,45 +449,103 @@
     <p>On a substrate with no fixed node, the platform is the only party that can attest anything. It is the only one that knows which image is running, in which revision, under which service account, at the instant the token is minted.</p>
   </div>
 
-  <h2>The Standards Already Split This in Two</h2>
+  <h2>There is More Prior Art Than It Looks Like</h2>
 
-  <p>I went looking for prior work expecting very little, on the assumption that Agent identity is too new to have a literature. That was wrong. Most of the work is filed under workload identity and microservices rather than under Agents, which is why it does not show up when you search for Agents.</p>
+  <p>Search for Agent identity and you get opinion pieces. The engineering is there, but it is filed in three separate places, and none of them uses the words you would search for.</p>
 
-  <p>Two IETF efforts are directly on this, and the important thing is that they are two rather than one.</p>
+  <h3>Tier one — the protocol work, which split the problem in two</h3>
 
-  <h3>WIMSE — the credential</h3>
+  <p>The <a href="https://datatracker.ietf.org/doc/charter-ietf-wimse/00-00/">IETF WIMSE working group</a> is chartered for least-privilege access control for workloads across multiple platforms, public and private. It has an <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-arch/">architecture draft</a>, a <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-identifier/">Workload Identifier</a>, <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-creds/">Workload Credentials</a>, and a <a href="https://www.ietf.org/ietf-ftp/internet-drafts/draft-ietf-wimse-wpt-00.txt">Workload Proof Token</a> binding a workload's authentication to a specific HTTP request.</p>
 
-  <p>The <a href="https://datatracker.ietf.org/doc/charter-ietf-wimse/00-00/">WIMSE working group</a> is chartered for least-privilege access control for workloads deployed across multiple platforms, public and private. Its output includes an <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-arch/">architecture draft</a>, a <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-identifier/">Workload Identifier</a>, <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-creds/">Workload Credentials</a>, and a <a href="https://www.ietf.org/ietf-ftp/internet-drafts/draft-ietf-wimse-wpt-00.txt">Workload Proof Token</a> that binds a workload's authentication to a specific HTTP request.</p>
-
-  <p>Read <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-identity-practices/">Workload Identity Practices</a> before adopting anything. Schwenkschuster and Rosomakho, draft 06, August 2026. It surveys how workloads get credentials today and does not treat SPIFFE as the only legitimate answer:</p>
+  <p>Read <a href="https://datatracker.ietf.org/doc/draft-ietf-wimse-workload-identity-practices/">Workload Identity Practices</a> before adopting anything — Schwenkschuster and Rosomakho, draft 06, August 2026. It surveys how workloads get credentials today, and it does not treat SPIFFE as the only legitimate answer:</p>
 
   <div class="callout">
     <p>"The biggest cloud providers have established the pattern of an 'Instance Metadata Endpoint'. Aside from allowing workloads to retrieve metadata about themselves, it also allows them to receive identity."</p>
     <p>And for cross-Cloud: "the workload first needs to federate to the Secure Token Service (STS) of the respective cloud, which is effectively an Identity Provider."</p>
   </div>
 
-  <p>That describes this mesh, in a standards-track document, listed beside SPIFFE rather than as the thing SPIFFE replaces.</p>
+  <p>That describes this mesh, in a standards-track document, listed beside SPIFFE rather than as the thing SPIFFE replaces. The draft also carries a requirement worth auditing against: a credential for internal platform access should not be reused to federate to an external STS, because that conflates trust and audience boundaries. This mesh mints a separate token per destination — the service URL for GCP, <code>sts.amazonaws.com</code> for AWS, <code>api://AzureADTokenExchange</code> for Entra — so it passes, because the audiences were picked deliberately.</p>
 
-  <p>The draft also carries a requirement worth auditing your own implementation against. A credential for internal platform access should not be reused to federate to an external STS, because that conflates trust and audience boundaries. This mesh mints a separate token per destination — the service URL for the GCP leg, <code>sts.amazonaws.com</code> for AWS, <code>api://AzureADTokenExchange</code> for Entra — so it passes, because the audiences were picked deliberately rather than by accident.</p>
+  <p><a href="https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/08/">Transaction Tokens</a>, draft 08, March 2026, OAuth working group, cover the other half. Short-lived signed JWTs carrying user identity, workload identity and authorization context along a call chain, issued by a Transaction Token Service implementing a profile of the OAuth 2.0 Token Exchange endpoint, and cryptographically protected so downstream workloads cannot alter what they were handed or invent a call no transaction started.</p>
 
-  <h3>Transaction Tokens — the call chain</h3>
+  <p>This is the microservices industry having already learned the lesson. Passing the caller's access token down the chain does not work. The fix was a separate token for the chain, not a better credential for the workload. There is an Agent extension, <a href="https://datatracker.ietf.org/doc/draft-oauth-transaction-tokens-for-agents/">Transaction Tokens for Agents</a> by Ashay Raut at Amazon, using <code>sub</code> for the principal and <code>act</code> for the Agent acting; draft 06 expired in April 2026 and was replaced by an individual submission.</p>
 
-  <p><a href="https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/08/">Transaction Tokens</a>, draft 08, March 2026, OAuth working group. They carry user identity, workload identity and authorization context along a call chain. Short-lived signed JWTs issued by a Transaction Token Service, which implements a profile of the OAuth 2.0 Token Exchange endpoint. Cryptographically protected, so downstream workloads cannot alter the context they were handed or invent a call that no transaction started.</p>
+  <p>Alongside those: <a href="https://spiffe.io/docs/latest/spiffe-specs/spiffe_federation/">SPIFFE Federation</a>, A2A's own extension mechanism, and on the research side <a href="https://arxiv.org/abs/2605.05440">Authorization Propagation in Multi-Agent AI Systems</a> (Krti Tallam, May 2026), which formalises the problem, names transitive delegation, aggregation inference and temporal validity as sub-problems, derives seven structural requirements, and concludes the field is "converging on the problem, but not yet on a complete architecture." <a href="https://arxiv.org/abs/2509.25974">OIDC-A</a> proposes an OIDC extension with delegation chains and attestation evidence, as an individual proposal rather than an adopted specification.</p>
 
-  <p>This is the microservices industry having already learned the lesson. Passing the caller's access token down the chain does not work. The fix was a separate token for the chain, not a better credential for the workload.</p>
+  <h3>Tier two — the governance frameworks, which say what and not how</h3>
 
-  <p>There is an Agent extension, <a href="https://datatracker.ietf.org/doc/draft-oauth-transaction-tokens-for-agents/">Transaction Tokens for Agents</a> by Ashay Raut at Amazon, using <code>sub</code> for the principal and <code>act</code> for the Agent acting, with <code>sub</code> set to the Agent itself when it runs autonomously. Draft 06 expired in April 2026 and was replaced by an individual submission.</p>
-
-  <h3>The literature</h3>
+  <p>A large body of work exists here and it is easy to miss because it is written for security programmes rather than for engineers.</p>
 
   <ul>
-    <li><a href="https://arxiv.org/abs/2605.05440">Authorization Propagation in Multi-Agent AI Systems</a>, Krti Tallam, May 2026. Formalises the problem as a workflow-level property, names three sub-problems — transitive delegation, aggregation inference, temporal validity — and derives seven structural requirements. Its verdict on the state of the art: recent work "demonstrates that the field is converging on the problem, but not yet on a complete architecture." It also reports that ordinary system behaviour, not only attacks, already produces these failures on a production platform.</li>
-    <li><a href="https://arxiv.org/abs/2509.25974">OpenID Connect for Agents (OIDC-A) 1.0</a> proposes an OIDC extension with agent identity, delegation-chain representation and attestation evidence compatible with IETF RATS and Entity Attestation Tokens. An individual proposal, not an adopted OpenID specification.</li>
+    <li>The Cloud Security Alliance has <a href="https://cloudsecurityalliance.org/artifacts/agentic-ai-identity-and-access-management-a-new-approach">Agentic AI Identity and Access Management: A New Approach</a>, an <a href="https://labs.cloudsecurityalliance.org/agentic/agentic-identity-governance-framework-v1/">Agent Identity Governance Framework</a>, and a whitepaper on the non-human identity governance vacuum.</li>
+    <li>The <strong>OWASP Top 10 for Agentic Applications 2026</strong> treats Agents as operational actors with delegated authority, and two of its categories are Identity and Privilege Abuse and Insecure Inter-Agent Communication.</li>
+    <li><strong>NIST</strong> issued a Request for Information on AI Agent Security in early 2026 and a concept paper on AI Agent Identity and Authorization. It points toward decentralised identifiers and verifiable credentials without mandating a technology.</li>
   </ul>
 
-  <div class="callout">
-    <p><strong>The standards bodies split the problem in two: a credential for the workload, and a separate token for the chain.</strong> The Agent-identity articles keep proposing one mechanism for both, and SPIFFE is the mechanism they reach for.</p>
+  <p>These are useful for deciding what to require. None of them tells you which token to put in which header, which is the question you have when the far side is a different vendor.</p>
+
+  <h3>Tier three — the products, and this is where cross-Cloud actually shows up</h3>
+
+  <p>All three Clouds shipped Agent identity in 2026, which is the part I had not accounted for.</p>
+
+  <div class="scroll">
+    <table>
+      <caption>Vendor Agent identity, 2026</caption>
+      <thead>
+        <tr><th>Product</th><th>Status</th><th>Shape</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Bedrock AgentCore Identity</td>
+          <td>GA</td>
+          <td>Built on Cognito. Inbound authorizer plus an outbound token vault for downstream tools.</td>
+        </tr>
+        <tr>
+          <td>Microsoft Entra Agent ID</td>
+          <td>Preview</td>
+          <td>Agents as first-class directory objects, under Conditional Access and the same lifecycle controls as users.</td>
+        </tr>
+        <tr>
+          <td>Vertex AI Agent Engine identities</td>
+          <td>Shipped</td>
+          <td>Agent identities inside Google's agent runtime.</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
+
+  <p>And they do address cross-Cloud — bilaterally. Microsoft documents securing a Bedrock Agent with Entra Agent ID and surfacing Agents from Bedrock, Vertex and Databricks in one registry. AWS documents Entra as an inbound identity provider for AgentCore Runtime and Gateway, configured with a discovery URL and a list of accepted <code>aud</code> claims.</p>
+
+  <div class="callout counter">
+    <p><strong>Every one of those is a vendor integration, not a federation.</strong> Each Cloud keeps its own registry and its own mapping, and cross-Cloud works because one vendor decided to support another. There is no interoperable registry and no neutral protocol — which is the same structure as the trust policies underneath, one layer up.</p>
+  </div>
+
+  <p>Two details from the AgentCore documentation are worth reading closely, because they cut against the discourse these products are sold into.</p>
+
+  <p>Its Entra inbound path supports "v1.0 and v2.0 Access and ID tokens <strong>that do not have any custom claims</strong>." The one leg in this mesh that lets you bring your own issuer documents that path as not carrying the extra claims a delegation chain would need.</p>
+
+  <p>And the outbound Microsoft credential provider is configured like this:</p>
+
+<pre><code>{
+  "name": "NAME",
+  "credentialProviderVendor": "MicrosoftOAuth2",
+  "oauth2ProviderConfigInput": {
+    "microsoftOauth2ProviderConfig": {
+      "clientId": "your-client-id",
+      "clientSecret": "your-client-secret",
+      "tenantId": "your-microsoft-entra-tenant"
+    }
+  }
+}</code></pre>
+
+  <p>A stored client secret, in the Agent identity product, for the cross-Cloud leg. This mesh does that leg with a federated credential and no secret at all.</p>
+
+  <h3>What the three tiers add up to</h3>
+
+  <p>Plenty has been written. The protocol work splits credential from call chain and is mostly at draft. The governance work says what to require and not how. The products are real and shipping, and each one is a single Cloud's registry with bilateral integrations bolted on.</p>
+
+  <p>The gap is specific: there is no neutral cross-Cloud Agent identity, and the direction of travel is three vendor planes rather than one standard. Which puts the architecture question back where it started — what do you build on top of three trust domains you do not control.</p>
+
 
   <h2>SPIRE Answers the First Half</h2>
 
@@ -700,6 +758,10 @@
   <p>The deeper reason is that a Cloud identity has no meaning outside its Cloud. AWS checks Google's signature and then applies a rule you wrote about a number it has never seen. Every far end decides locally what a foreign identity may do, so the mapping exists once per boundary no matter who issues the token. Change the issuer and you have changed the signature, not the arithmetic.</p>
 
   <p>What is missing is narrower than the articles suggest, and the standards bodies have already divided it correctly. A credential identifies the workload and the Clouds hand you an attested one for free. A separate token carries the call chain, because that context cannot survive inside a credential three vendors each define differently. WIMSE is standardising the first half, OAuth Transaction Tokens the second, and A2A's extension mechanism is where the second one travels.</p>
+
+  <p>The thing to watch is that the Clouds are not waiting for any of it. AWS, Microsoft and Google all shipped Agent identity in 2026, each as a registry inside its own boundary, and cross-Cloud works where one vendor has chosen to support another. AWS accepts Entra as an inbound provider; Microsoft surfaces Bedrock and Vertex Agents in its registry. Useful integrations, and the same structure as the trust policies underneath — a local decision at each boundary, made bilaterally, one layer higher up.</p>
+
+  <p>That is the argument for keeping the credential layer boring. Federation you configure yourself works the same on every Cloud and does not move when a vendor changes which competitor it supports this quarter.</p>
 
   <footer class="colophon">
     <div>Measured 25 August 2026 · deployed mesh, single runs</div>

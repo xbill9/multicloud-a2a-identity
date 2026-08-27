@@ -13,6 +13,16 @@ The coordinator runs on Cloud Run because it is a runtime that will mint an OIDC
 
 Every leg has a positive control and a negative control — run it as deployed, then run it again with the credential removed and confirm it is refused. A leg that answers proves nothing until the same leg denied without its credential. Eight probes, all holding.
 
+## What the token does, and what it does not
+
+Worth settling before the mechanics, because it is the distinction the rest of this rests on.
+
+**The OIDC token authenticates. It carries no permissions at all.** On this leg the shape makes it obvious: the Google-signed assertion goes to STS, and what comes back — temporary credentials — is what signs the call. The token never touches the AgentCore request.
+
+What AWS learns from it is narrow. It fetches Google's keys, checks the signature, and applies the conditions you wrote. It has never heard of your service account. Authentication crosses the boundary; authorization never does, and the audience is a replay boundary rather than a permission — it stops a token minted for STS being replayed against Entra, and because the caller chooses it, an audience-only condition proves only that *some* Google identity minted a token naming your resource.
+
+There are no OAuth scopes anywhere in this flow. Every permission is IAM's, applied after the token has finished its one job — which is exactly why least privilege here is a session-policy question and not a token question.
+
 ## Two things about the trust policy
 
 Both cost real time, and neither is discoverable from the error.
@@ -92,9 +102,19 @@ Three clouds means six directed cross-cloud edges, each settled by what the call
 
 All three clouds now mint an OIDC JWT with a caller-chosen audience. The difference is on the accept side, and AgentCore is the only one of the three whose agent ingress will validate a token from an issuer it does not own — a [custom JWT authorizer](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/inbound-jwt-authorizer.html) configured with a discovery URL, allowed audiences and allowed clients. Cloud Run's invoker check takes Google-signed ID tokens only. Container Apps ingress takes Entra.
 
-If every cloud's ingress did what AgentCore's does, the matrix would collapse from N² to N — three mints, three accept-configurations, and a fourth cloud costing one of each instead of six new integrations. AWS has already made that change on both sides.
+The right way to read that is not that one cloud is ahead. **It is ordinary OIDC validation, done the ordinary way** — a resource server trusting a discovery document and checking two claims. The baseline is unremarkable; what is unusual is the deviation, two ingresses requiring an issuer they own.
 
-One scoping note worth carrying: AWS's Entra integration guide states it supports Entra v1.0 and v2.0 tokens "that do not have any custom claims." That constraint appears on the Entra-specific page; the general authorizer documentation describes discovery URL, audiences and clients without a corresponding restriction. Test before relying on custom claims through any issuer.
+If both did the ordinary thing the matrix would collapse from N² to N — three mints, three accept-configurations, and a fourth cloud costing one of each instead of six new integrations. That is a change to two products, not a change to the industry.
+
+Nobody has this finished, including the cloud in the "yes" column: AgentCore Identity's outbound Microsoft credential provider is configured with a stored `clientSecret`. It is a different mechanism from outbound identity federation — OAuth access to Microsoft resources rather than workload identity — but the same vendor that ships a keyless way to authenticate to Entra configures that leg with a secret anyway.
+
+AWS's Entra integration guide also notes support for v1.0 and v2.0 tokens "that do not have any custom claims", a constraint documented on that page rather than on the general authorizer — worth checking before routing custom claims through any issuer.
+
+## And why an identity format will not fix it
+
+The standing recommendation for this problem is SPIFFE and SPIRE, and it does not transfer to this shape of deployment. **SPIRE changes who signs your token; it does not change the fact that AWS, Azure and Google each decide, locally and separately, what that signature is allowed to do.**
+
+SPIFFE gives every workload a passport your organisation issues. Calling AWS is not showing a passport, it is crossing a border, and the visa rules are written by the destination. Adopt SPIRE and AWS still needs a trust policy, Entra still needs a federated credential, Cloud Run still needs an invoker binding — you have upgraded the passport, and the visa count was never a property of the passport. On serverless there is also no node to attest, so the server ends up re-signing a metadata token's claims under a new name: a signing hop, plus a CA key, in a mesh whose whole point is that it holds no secrets. SPIRE is the right call when you own the nodes, which is a common case and not this one.
 
 ## Two operational findings
 
